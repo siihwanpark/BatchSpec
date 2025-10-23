@@ -1,0 +1,9 @@
+transformers
+numpy==1.26.3
+protobuf
+sentencepiece
+datasets
+tiktoken
+packaging
+ninja
+einops
