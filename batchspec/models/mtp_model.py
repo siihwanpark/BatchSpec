@@ -56,8 +56,8 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
             page_size: Size of each page (tokens per page)
             **kwargs: Additional arguments (ignored)
         """
-        # Setup RoPE kernels (uses position IDs)
-        self._setup_rope_kernels(use_position_ids=True)
+        # Setup RoPE function (uses position IDs)
+        rope_func = self._setup_rope_kernels(use_position_ids=True)
         
         # Determine dtype for cache
         dtype = (
@@ -83,8 +83,8 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
             attn.attn_draft = torch.ops.mylib.attn_draft
             attn.attn_draft_and_verify = torch.ops.mylib.attn_draft_and_verify
             
-            # Register RoPE kernel
-            attn.rope = torch.ops.mylib.rope
+            # Assign RoPE function directly
+            attn.rope = rope_func
     
     def get_tok_embeddings(self) -> nn.Embedding:
         """Get token embedding layer.

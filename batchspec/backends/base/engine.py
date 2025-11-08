@@ -6,17 +6,17 @@ from typing import List
 import torch
 from transformers import PreTrainedTokenizer
 
-from .kv_cache import KVCacheMixin
 from .attn_wrapper import AttentionWrapperMixin
+from .page_table import PageTable
 
 
-class BaseEngine(KVCacheMixin, AttentionWrapperMixin):
+class BaseEngine(AttentionWrapperMixin):
     """Base class for language model engines.
     
     Provides common functionality for all engines including:
     - Model loading
     - Cache setup
-    - KV cache management (via KVCacheMixin)
+    - KV page table management (via PageTable)
     - Attention wrapper management (via AttentionWrapperMixin)
     - Sampling parameter setup
     - Compilation support
@@ -71,7 +71,7 @@ class BaseEngine(KVCacheMixin, AttentionWrapperMixin):
         prefill_chunk_size: int = 128,
         **kwargs
     ):
-        """Setup KV caches and page management.
+        """Setup KV page table.
         
         Args:
             max_batch_size: Maximum batch size
@@ -81,19 +81,15 @@ class BaseEngine(KVCacheMixin, AttentionWrapperMixin):
             **kwargs: Additional backend-specific arguments
         """
         self.batch_size = max_batch_size
-        self.page_size = page_size
         self.prefill_chunk_size = prefill_chunk_size
-
-        # Calculate page requirements
-        self.max_num_pages_per_request = (max_cache_length + page_size - 1) // page_size
-        self.max_num_pages = max_batch_size * self.max_num_pages_per_request
         
-        # Initialize KV cache state (from KVCacheMixin)
-        self._init_kv_cache_state(
-            max_batch_size,
-            self.max_num_pages,
-            self.max_num_pages_per_request,
-            self.device
+        # Initialize KV page table
+        self.qo_indptr = torch.arange(max_batch_size + 1, dtype=torch.int32, device=self.device)
+        self.kv_page_table = PageTable(
+            page_size=page_size,
+            max_batch_size=max_batch_size,
+            max_num_pages_per_request=(max_cache_length + page_size - 1) // page_size,
+            device=self.device
         )
     
     def setup_sampling_params(
@@ -128,6 +124,7 @@ class BaseEngine(KVCacheMixin, AttentionWrapperMixin):
             suppress_token: Token to suppress
             replace_tokens: Tokens to replace
         """
+        self.pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
         self.eos_token_id = self.tokenizer.eos_token_id
         self.suppress_token_id = self.tokenizer.encode(suppress_token, add_special_tokens=False)[0]
         self.replace_token_ids = torch.tensor(

@@ -17,14 +17,11 @@ class RoPEMixin:
         Args:
             use_position_ids: Whether to use position IDs directly (True)
                             or compute from indptr/offsets (False)
+                            
+        Returns:
+            RoPE function that can be directly called
         """
         config = self.config
-        
-        # Define schema based on whether position IDs are used
-        if use_position_ids:
-            schema = "(Tensor q, Tensor k, Tensor position_ids) -> (Tensor ropeq, Tensor ropek)"
-        else:
-            schema = "(Tensor q, Tensor k, Tensor indptr, Tensor offsets) -> (Tensor ropeq, Tensor ropek)"
         
         # RoPE configuration
         rope_kwargs = dict(
@@ -47,32 +44,21 @@ class RoPEMixin:
             )
             
             if use_position_ids:
-                backend = lambda q, k, position_ids: flashinfer.rope.apply_llama31_rope_pos_ids(
+                rope_func = lambda q, k, position_ids: flashinfer.rope.apply_llama31_rope_pos_ids(
                     q, k, position_ids, **rope_kwargs
                 )
             else:
-                backend = lambda q, k, indptr, offsets: flashinfer.rope.apply_llama31_rope(
+                rope_func = lambda q, k, indptr, offsets: flashinfer.rope.apply_llama31_rope(
                     q, k, indptr, offsets, **rope_kwargs
                 )
         else:
             if use_position_ids:
-                backend = lambda q, k, position_ids: flashinfer.rope.apply_rope_pos_ids(
+                rope_func = lambda q, k, position_ids: flashinfer.rope.apply_rope_pos_ids(
                     q, k, position_ids, **rope_kwargs
                 )
             else:
-                backend = lambda q, k, indptr, offsets: flashinfer.rope.apply_rope(
+                rope_func = lambda q, k, indptr, offsets: flashinfer.rope.apply_rope(
                     q, k, indptr, offsets, **rope_kwargs
                 )
         
-        # Register custom operator (only if not already registered)
-        if not hasattr(torch.ops.mylib, 'rope'):
-            torch.library.define("mylib::rope", schema)
-            
-            @torch.library.impl("mylib::rope", "cuda")
-            def rope_impl(*args):
-                return backend(*args)
-            
-            @torch.library.register_fake("mylib::rope")
-            def rope_fake(*args):
-                q, k = args[0], args[1]
-                return torch.empty_like(q), torch.empty_like(k)
+        return rope_func

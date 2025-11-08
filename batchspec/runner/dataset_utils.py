@@ -30,14 +30,13 @@ PROMPT_KEY_DICT = {
 DEFAULT_BENCHMARK_DATASET_PATH = "/home/mngcuser1/sihwan_workspace/BatchSpec/tools/data/responses"
 
 
-def load_dataset(tokenizer, dataset_name, seq_len=256, num_samples=None, num_questions_in_prompt=1):
+def load_dataset(tokenizer, dataset_name, num_samples=None, num_questions_in_prompt=1):
     """
     Load and tokenize a dataset for E2E generation.
     
     Args:
         tokenizer: HuggingFace tokenizer
         dataset_name: Name of the dataset (e.g., "GSM8K", "AIME2025")
-        seq_len: Maximum sequence length for tokenization
         num_samples: Number of samples to load (None = all)
         num_questions_in_prompt: Number of questions to combine in a single prompt
         
@@ -65,7 +64,7 @@ def load_dataset(tokenizer, dataset_name, seq_len=256, num_samples=None, num_que
             )
             return templated
         texts = [apply_chat_template(tokenizer, q) for q in examples[prompt_key]]
-        return tokenizer(texts, return_tensors="pt", max_length=seq_len, padding="max_length", truncation=True)
+        return tokenizer(texts, return_attention_mask=False)
     
     if num_questions_in_prompt > 1:
         all_questions = ds[prompt_key]
@@ -78,8 +77,8 @@ def load_dataset(tokenizer, dataset_name, seq_len=256, num_samples=None, num_que
         ds = Dataset.from_dict({f"{prompt_key}": new_prompts})
     
     ds = ds.map(tokenize_fn, batched=True, remove_columns=[prompt_key])
-    ds.set_format(type="torch", columns=["input_ids", "attention_mask"])
-
+    ds.set_format(type="torch", columns=["input_ids"])
+    
     if num_samples is not None:
         n = len(ds)
         num_samples = int(num_samples)
@@ -96,8 +95,6 @@ def load_dataset(tokenizer, dataset_name, seq_len=256, num_samples=None, num_que
             if rem > 0:
                 parts.append(ds.select(range(rem))) # tail
             ds = concatenate_datasets(parts)
-
-        ds.set_format(type="torch", columns=["input_ids", "attention_mask"])
 
     return ds
 

@@ -1,6 +1,6 @@
 """Attention mechanism implementations."""
 
-from .base import BaseAttention, GatedLoRAAttention, AttentionMixin
+from .base import BaseAttention, GatedLoRAAttention
 from .standard import StandardAttention
 from .mtp import MTPAttention
 from .eagle import EAGLEAttention
@@ -8,7 +8,6 @@ from .eagle import EAGLEAttention
 __all__ = [
     "BaseAttention",
     "GatedLoRAAttention",
-    "AttentionMixin",
     "StandardAttention",
     "EAGLEAttention",
     "MTPAttention",

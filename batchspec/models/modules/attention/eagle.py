@@ -7,12 +7,12 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch import Tensor
 
-from .base import BaseAttention, AttentionMixin
+from .base import BaseAttention
 from ...configs import ModelArgs
 from batchspec.profiler import attention_compute_timer, rope_compute_timer
 
 
-class EAGLEAttention(BaseAttention, AttentionMixin):
+class EAGLEAttention(BaseAttention):
     """Attention implementation for EAGLE speculative decoding.
     
     EAGLE uses a modified attention mechanism that processes concatenated

@@ -44,14 +44,6 @@ class MTPEngine(BaseEngine):
         self.draft_length = draft_length
         self.mask_token_id = None
         
-        # Forward functions
-        self.prefill_forward = lambda model, x, position_ids, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen: \
-            model(x, None, position_ids, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen, attn_type="prefill")
-        self.draft_forward = lambda model, x, gate_mask, position_ids, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen: \
-            model(x, gate_mask, position_ids, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen, attn_type="draft")
-        self.draft_and_verify_forward = lambda model, x, gate_mask, position_ids, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen: \
-            model(x, gate_mask, position_ids, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen, attn_type="draft_and_verify")
-    
     def load_model(
         self,
         model_name: str,
@@ -128,56 +120,55 @@ class MTPEngine(BaseEngine):
         self.max_seq_len = max_seq_length
         self.draft_and_verify_len = (self.draft_length + 1) ** 2
         self.max_cache_len = max_seq_length + self.draft_and_verify_len + 1
+        self.page_size = page_size
+
         super().setup_caches(max_batch_size, self.max_cache_len, page_size, prefill_chunk_size)
         
         # Set common attention masks and position ids
         self._setup_common_attn_mask_and_position_ids()
 
         # Create attention buffers
-        self.prefill_buffer = self._create_attention_buffer(384)  # 3 * 128MB
-        self.draft_buffer = self._create_attention_buffer(384)
-        self.draft_and_verify_buffer = self._create_attention_buffer(384)
-        self.custom_mask_buf = torch.empty(max_batch_size * self.draft_and_verify_len * self.max_cache_len // 8 + 1, dtype=torch.uint8, device=self.device)
+        self.attn_buffer = self._create_attention_buffer(384)
+
+        max_bytes_for_attn_masks = (max_batch_size * (self.draft_and_verify_len * self.max_cache_len)) // 8 + 1
+        self.custom_mask_buf = torch.empty(max_bytes_for_attn_masks, dtype=torch.uint8, device=self.device)
         self.mask_indptr_buf = torch.arange(max_batch_size + 1, dtype=torch.int32, device=self.device)
         
         # Create attention wrappers
-        self.attn_wrappers = {
-            "prefill": self._create_attention_wrapper(
-                self.prefill_buffer,
-                qo_length=prefill_chunk_size
-            ),
-            "draft": self._create_attention_wrapper(
-                self.draft_buffer,
-                qo_length=self.draft_length
-            ),
-            "draft_and_verify": self._create_attention_wrapper(
-                self.draft_and_verify_buffer,
-                qo_length=self.draft_and_verify_len,
-                use_custom_mask=True,
-                custom_mask_buf=self.custom_mask_buf,
-                mask_indptr_buf=self.mask_indptr_buf,
-            ),
-        }
-        
-        # Register with custom ops
-        self._register_attention_wrappers({
-            "attn_prefill": self.attn_wrappers["prefill"],
-            "attn_draft": self.attn_wrappers["draft"],
-            "attn_draft_and_verify": self.attn_wrappers["draft_and_verify"],
-        })
-        
+        self.attn_wrapper = self._create_attention_wrapper(
+            self.attn_buffer,
+            qo_indptr=self.qo_indptr,
+            use_custom_mask=True,
+            custom_mask_buf=self.custom_mask_buf,
+            mask_indptr_buf=self.mask_indptr_buf,
+        )
+
         # Setup model caches
+        max_num_pages = self.kv_page_table.max_num_pages_per_request * max_batch_size
         with torch.device(self.device):
-            self.model.setup_caches(num_pages=self.max_num_pages, page_size=self.page_size)
+            self.model.setup_caches(
+                num_pages=max_num_pages,
+                page_size=page_size,
+                attn_kernel=self.attn_wrapper
+            )
+
+        # Setup scheduler for continuous batching
+        self.scheduler = Scheduler(
+            max_concurrency=max_batch_size,
+            prefill_chunk_len=prefill_chunk_size,
+            decode_len=self.draft_and_verify_len,
+        )
+
+        # Setup tracer
+        self.tracer = SchedulerTracer(self.scheduler, color=True, show_queues=True)
 
     def compile(self):
         """Enable torch.compile for forward functions.
         """
         super().compile()
-        self.prefill_forward = torch.compile(self.prefill_forward)
-        self.draft_forward = torch.compile(self.draft_forward)
-        self.draft_and_verify_forward = torch.compile(self.draft_and_verify_forward)
-    
+        self.forward = torch.compile(self.forward)
+
+
     def _setup_common_attn_mask_and_position_ids(self):
         """
         Build non-causal MTP attention mask (bool) and position_ids.

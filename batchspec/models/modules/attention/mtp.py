@@ -6,12 +6,12 @@ import torch
 import torch.distributed as dist
 from torch import Tensor
 
-from .base import GatedLoRAAttention, AttentionMixin
+from .base import GatedLoRAAttention
 from ...configs import ModelArgs, LoRAConfig
 from batchspec.profiler import rope_compute_timer, attention_compute_timer
 
 
-class MTPAttention(GatedLoRAAttention, AttentionMixin):
+class MTPAttention(GatedLoRAAttention):
     """Attention implementation for Multi-Token Prediction models.
     
     Extends GatedLoRAAttention to support multi-token prediction.

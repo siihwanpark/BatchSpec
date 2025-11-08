@@ -5,6 +5,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from batchspec.models import LoRAConfig
+from batchspec.backends.continuous import Sequence
 
 
 class Runner:
@@ -17,7 +18,7 @@ class Runner:
     - Output processing and statistics
     """
     
-    def __init__(self, args, engine, tokenizer, dataloader=None, batch_sampler=None):
+    def __init__(self, args, engine, tokenizer, dataset=None, batch_sampler=None):
         """
         Initialize the runner.
         
@@ -25,18 +26,18 @@ class Runner:
             args: Command-line arguments
             engine: Backend engine (StandardEngine or MTPEngine)
             tokenizer: HuggingFace tokenizer
-            dataloader: DataLoader for E2E mode (mutually exclusive with batch_sampler)
+            dataset: Dataset for E2E mode (mutually exclusive with batch_sampler)
             batch_sampler: BatchSampler for benchmark mode (mutually exclusive with dataloader)
         """
         self.args = args
         self.engine = engine
-        self.dataloader = dataloader
+        self.dataset = dataset
         self.batch_sampler = batch_sampler
         self.device = engine.device
         
-        if dataloader is not None and batch_sampler is not None:
-            raise ValueError("Provide either dataloader or batch_sampler, not both.")
-        self.mode = "e2e" if dataloader is not None else "benchmark"
+        if dataset is not None and batch_sampler is not None:
+            raise ValueError("Provide either dataset or batch_sampler, not both.")
+        self.mode = "e2e" if dataset is not None else "benchmark"
 
     def setup(self, process_group):
         """
@@ -83,8 +84,45 @@ class Runner:
             force_budget=self.args.force_budget,
         )
         self.engine.setup_special_tokens()
+
+    def run_e2e(self):
+        """
+        Main execution loop.
         
-    def run(self):
+        Iterates through batches, calls engine.generate(), and prints statistics.
+        """
+        total_gen_tokens = 0
+        total_model_steps = 0
+        
+        # Wrapping dataset with List[Sequence]
+        sequences = [
+            Sequence(seq_id=seq_id, max_seq_len=self.args.max_len, prompt_ids=input_ids, prompt_len=len(input_ids))
+            for seq_id, input_ids in enumerate(self.dataset['input_ids'])
+        ]
+
+        completed_sequences = self.engine.generate(sequences)
+        
+        import pdb; pdb.set_trace()
+
+        # Print output if requested
+        if self.args.printoutput:
+            self._print_output(run_idx, output, query_lens, num_generated_tokens, num_total_tokens, model_steps)
+        
+        # Accumulate statistics
+        total_gen_tokens += num_generated_tokens.sum().item()
+        total_model_steps += model_steps
+        
+        # Distributed barrier if needed
+        if self.args.rank_group and len(self.args.rank_group) > 1:
+            dist.barrier()
+        
+        # Print final statistics
+        bsz = input_ids.shape[0]
+        print(f"Total generated tokens: {total_gen_tokens}")
+        print(f"Total model steps (batch_size): {total_model_steps} (batch_size: {bsz})")
+        print(f"➡️  Mean generated tokens: {total_gen_tokens / (total_model_steps * bsz):.2f}")
+
+    def run_benchmark(self):
         """
         Main execution loop.
         
@@ -94,22 +132,11 @@ class Runner:
         total_model_steps = 0
         
         num_total_runs = self.args.num_total_runs
+        iterator = range(num_total_runs)
         
-        if self.mode == "e2e":
-            num_total_runs = min(num_total_runs, len(self.dataloader))
-            iterator = enumerate(self.dataloader)
-        else:
-            iterator = enumerate(range(num_total_runs))
-        
-        for run_idx, batch_or_idx in tqdm(iterator, total=num_total_runs):
-            if run_idx >= num_total_runs:
-                break
-            
-            # Load or sample batch
-            if self.mode == "e2e":
-                input_ids, query_lens = self._load_batch(batch_or_idx)
-            else:
-                input_ids, query_lens = self._sample_batch()
+        for run_idx in tqdm(iterator, total=num_total_runs):
+            # Sample batch
+            input_ids, query_lens = self._sample_batch()
             
             # Call engine.generate()
             output, num_generated_tokens, num_total_tokens, model_steps = self.engine.generate_batch(input_ids=input_ids, query_lens=query_lens)

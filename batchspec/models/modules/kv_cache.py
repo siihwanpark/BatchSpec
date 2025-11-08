@@ -11,35 +11,7 @@ from flashinfer import (
     append_paged_kv_cache,
 )
 
-
-# Define custom operator for KV cache updates (only if not already registered)
-if not hasattr(torch.ops.mylib, 'update_kv'):
-    torch.library.define(
-        "mylib::update_kv",
-        "(Tensor k, Tensor v, Tensor kv_append_indptr, Tensor(a!) kv_cache, "
-        "Tensor kv_page_indices, Tensor kv_page_indptr, Tensor cachelen, int page_size) -> ()",
-    )
-
-    @torch.library.impl("mylib::update_kv", "cuda")
-    def update_kv(k, v, kv_append_indptr, kv_cache, kv_page_indices, 
-                    kv_page_indptr, kv_page_last_len, page_size=128):
-        """Update KV cache with new key-value pairs."""
-        nnz_kv = kv_append_indptr[-1].item()
-        batch_indices, positions = get_batch_indices_positions(
-            kv_append_indptr, 
-            get_seq_lens(kv_page_indptr, kv_page_last_len, page_size), 
-            nnz_kv
-        )
-        append_paged_kv_cache(
-            k, v, batch_indices, positions, kv_cache, 
-            kv_page_indices, kv_page_indptr, kv_page_last_len
-        )
-
-    @torch.library.register_fake("mylib::update_kv")
-    def update_kv_abstract(k, v, kv_append_indptr, kv_cache, kv_page_indices, 
-                            kv_page_indptr, kv_page_last_len, page_size=128):
-        """Abstract implementation for torch.compile."""
-        return None
+from batchspec.backends.base.page_table import PageTable
 
 
 class StandardKVCache(nn.Module):
@@ -68,7 +40,7 @@ class StandardKVCache(nn.Module):
         
         # Initialize cache tensor: [pages, 2 (k/v), page_size, heads, head_dim]
         cache_shape = (max_num_pages, 2, page_size, n_heads, head_dim)
-        self.register_buffer('kv_cache', torch.zeros(cache_shape, dtype=dtype))
+        self.register_buffer('kv_cache', torch.empty(cache_shape, dtype=dtype))
         self.page_size = page_size
         
     def update(
@@ -76,27 +48,37 @@ class StandardKVCache(nn.Module):
         k: Tensor,
         v: Tensor,
         kv_append_indptr: Tensor,
-        kv_page_indices: Tensor,
-        kv_page_indptr: Tensor,
-        kv_page_lastlen: Tensor
+        kv_page_table: PageTable,
     ) -> Tensor:
         """Update cache with new key-value pairs.
         
         Args:
             k: Key tensor
             v: Value tensor
-            kv_append_indptr: Indices for appending KV pairs
-            kv_page_indices: Page indices for KV storage
-            kv_page_indptr: Page indirection pointer
-            kv_page_lastlen: Last length of each page
+            kv_page_table: Page table for KV cache
             
         Returns:
             Updated KV cache tensor
         """
-        torch.ops.mylib.update_kv(
-            k, v, kv_append_indptr, self.kv_cache, 
-            kv_page_indices, kv_page_indptr, kv_page_lastlen, 
-            self.page_size
+        batch_indices, positions = get_batch_indices_positions(
+            append_indptr=kv_append_indptr,
+            seq_lens=get_seq_lens(
+                kv_indptr=kv_page_table.paged_kv_indptr,
+                kv_last_page_len=kv_page_table.paged_kv_last_page_len,
+                page_size=self.page_size,
+            ), 
+            nnz=kv_append_indptr[-1].item()
+        )
+        append_paged_kv_cache(
+            append_key=k,
+            append_value=v,
+            batch_indices=batch_indices,
+            positions=positions,
+            paged_kv_cache=self.kv_cache,
+            kv_indices=kv_page_table.paged_kv_indices,
+            kv_indptr=kv_page_table.paged_kv_indptr,
+            kv_last_page_len=kv_page_table.paged_kv_last_page_len,
+            kv_layout='NHD',
         )
         return self.kv_cache
 
@@ -136,10 +118,7 @@ class StreamingKVCache(StandardKVCache):
         k: Tensor,
         v: Tensor,
         query_lens: Tensor,
-        kv_append_indptr: Tensor,
-        kv_page_indices: Tensor,
-        kv_page_indptr: Tensor,
-        kv_page_lastlen: Tensor,
+        kv_page_table: PageTable,
         bsz: int,
         context_len: int,
         seq_len: int,
@@ -238,8 +217,7 @@ class StreamingKVCache(StandardKVCache):
         else:
             # Standard update when within budget
             self.update(
-                k, v, kv_append_indptr, kv_page_indices, 
-                kv_page_indptr, kv_page_lastlen
+                k, v, kv_page_table
             )
             key_states = self.kv_cache[:, 0].clone().reshape(
                 bsz, -1, n_local_heads, head_dim
@@ -255,8 +233,8 @@ class StreamingKVCache(StandardKVCache):
         key_states[:, :self.streaming_budget] = rope(
             q=keys_to_rotate,
             k=keys_to_rotate,
-            indptr=kv_append_indptr // seq_len * self.streaming_budget,
-            offsets=torch.zeros(bsz, dtype=torch.int32, device=kv_append_indptr.device),
+            indptr=kv_page_table.qo_indptr // seq_len * self.streaming_budget,
+            offsets=torch.zeros(bsz, dtype=torch.int32, device=kv_page_table.device),
         )[1].reshape(bsz, -1, n_local_heads, head_dim)
         
         key_states = key_states.reshape(-1, self.page_size, n_local_heads, head_dim)

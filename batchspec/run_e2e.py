@@ -36,12 +36,9 @@ def main():
         # Prepare the dataset
         dataset = load_dataset(
             tokenizer=tokenizer, 
-            dataset_name=args.dataset, 
-            seq_len=args.prefix_len, 
-            num_samples=args.num_total_runs*args.batch_size, 
+            dataset_name=args.dataset,
             num_questions_in_prompt=args.num_questions_in_prompt
         )
-        dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
 
         # Initialize the engine
         if args.backend == "standard":
@@ -52,7 +49,7 @@ def main():
             raise ValueError(f"Unsupported backend: {args.backend}")
 
         # Initialize the runner
-        runner = Runner(args, engine, tokenizer, dataloader=dataloader)
+        runner = Runner(args, engine, tokenizer, dataset=dataset)
         runner.setup(process_group)
         
         if args.profiling:
@@ -63,7 +60,7 @@ def main():
             prof.attach_engine(engine)
             
         # Run the benchmark
-        runner.run()
+        runner.run_e2e()
         
         if args.profiling:
             # Save the profiling results and unregister the profiler

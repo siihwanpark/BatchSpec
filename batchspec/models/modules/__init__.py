@@ -1,7 +1,7 @@
 """Shared neural network modules."""
 
 from .attention import (
-    BaseAttention, GatedLoRAAttention, AttentionMixin,
+    BaseAttention, GatedLoRAAttention,
     StandardAttention, EAGLEAttention, MTPAttention
 )
 from .feedforward import FeedForward, GatedLoRAFeedForward
@@ -15,7 +15,6 @@ from .sampler_head import SamplerHead, SamplerHeadBlock
 __all__ = [
     "BaseAttention",
     "GatedLoRAAttention",
-    "AttentionMixin",
     "StandardAttention",
     "EAGLEAttention",
     "MTPAttention",

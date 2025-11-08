@@ -1,6 +1,6 @@
 """Standard transformer implementation."""
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import torch
 from torch import Tensor
@@ -8,6 +8,7 @@ from torch import Tensor
 from .configs import ModelArgs
 from .modules import RoPEMixin, StandardAttention, StandardKVCache
 from .base_model import BaseTransformerBlock, BaseTransformer
+from batchspec.backends.base.page_table import PageTable
 
 
 class StandardTransformer(BaseTransformer, RoPEMixin):
@@ -30,15 +31,16 @@ class StandardTransformer(BaseTransformer, RoPEMixin):
         """Return BaseTransformerBlock class."""
         return BaseTransformerBlock
     
-    def setup_caches(self, num_pages: int, page_size: int):
+    def setup_caches(self, num_pages: int, page_size: int, attn_kernel: Any):
         """Setup KV caches and attention kernels.
         
         Args:
             num_pages: Total number of pages to allocate
             page_size: Size of each page (tokens per page)
+            attn_kernel: Attention kernel
         """
-        # Setup RoPE kernels (uses offsets, not position_ids)
-        self._setup_rope_kernels(use_position_ids=False)
+        # Setup RoPE function (uses offsets, not position_ids)
+        rope_func = self._setup_rope_kernels(use_position_ids=False)
         
         # Determine dtype for cache
         dtype = (
@@ -51,55 +53,47 @@ class StandardTransformer(BaseTransformer, RoPEMixin):
         for layer in self.layers:
             attn = layer.attention
             
+            # Assign RoPE function and attention kernels
+            attn.rope = rope_func
+            attn.attn_kernel = attn_kernel
+
             # Initialize KV cache
             attn.kv_cache = StandardKVCache(
-                num_pages, page_size,
-                self.config.n_local_heads,
-                self.config.head_dim,
-                dtype
+                max_num_pages=num_pages,
+                page_size=page_size,
+                n_heads=self.config.n_local_heads,
+                head_dim=self.config.head_dim,
+                dtype=dtype,
             )
 
-            # Register RoPE kernel
-            attn.rope = torch.ops.mylib.rope
-            
-            # Register attention kernels
-            attn.attn_prefill = torch.ops.mylib.attn_prefill
-            attn.attn_decode = torch.ops.mylib.attn_decode 
-            
-            
+
     def forward(
         self,
-        idx: Tensor,
-        input_pos: Tensor,
-        kv_append_indptr: Tensor,
-        kv_page_indices: Tensor,
-        kv_page_indptr: Tensor,
-        kv_page_lastlen: Tensor,
-        attn_type: str = "decode"
+        input_ids: Tensor,
+        position_offsets: Tensor,
+        qo_indptr: Tensor,
+        kv_page_table: PageTable,
     ) -> Tensor:
         """Forward pass through the transformer.
         
         Args:
-            idx: Input token indices of shape (batch_size, seq_len)
-            input_pos: Position offsets for RoPE
-            kv_append_indptr: Indices for KV cache appending
-            kv_page_indices: Page indices for KV cache
-            kv_page_indptr: Page indirection pointers
-            kv_page_lastlen: Last length of each page
-            attn_type: Type of attention ("prefill", "verify", or "decode")
+            input_ids: Input token indices of shape (batch_size, seq_len)
+            position_offsets: Position offsets (start position id)
+            qo_indptr: Index pointer for Query/Output tokens
+            kv_page_table: Page table for KV cache
             
         Returns:
             Logits tensor of shape (batch_size, seq_len, vocab_size)
         """
         # Embed tokens
-        x = self.tok_embeddings(idx)
+        x = self.tok_embeddings(input_ids)
         
         # Forward pass through transformer layers
         for layer in self.layers:
-            x = layer(
-                x, input_pos, kv_append_indptr,
-                kv_page_indices, kv_page_indptr, kv_page_lastlen,
-                attn_type=attn_type
+            x = layer(x, 
+                position_offsets=position_offsets,
+                qo_indptr=qo_indptr,
+                kv_page_table=kv_page_table,
             )
         
         # Final normalization and projection

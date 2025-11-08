@@ -179,9 +179,9 @@ class EAGLETransformer(BaseTransformer, RoPEMixin):
             num_pages: Total number of pages to allocate
             page_size: Size of each page (tokens per page)
         """
-        # Setup RoPE kernels
+        # Setup RoPE function
         # Chain mode uses offsets, standard mode uses position IDs
-        self._setup_rope_kernels(use_position_ids=(not self.use_chain_mode))
+        rope_func = self._setup_rope_kernels(use_position_ids=(not self.use_chain_mode))
         
         # Determine dtype for cache
         dtype = (
@@ -205,7 +205,7 @@ class EAGLETransformer(BaseTransformer, RoPEMixin):
             # Register target-specific attention kernels
             attn.attn_prefill = torch.ops.mylib.target_prefill_attn
             attn.attn_verify = torch.ops.mylib.target_verify_attn
-            attn.rope = torch.ops.mylib.rope
+            attn.rope = rope_func
             
             # Store whether we use position IDs for this attention
             attn.use_position_ids = (not self.use_chain_mode)
@@ -221,7 +221,7 @@ class EAGLETransformer(BaseTransformer, RoPEMixin):
         )
         
         eagle_attn.prefill_attn = torch.ops.mylib.eagle_prefill_attn
-        eagle_attn.rope = torch.ops.mylib.rope
+        eagle_attn.rope = rope_func
         eagle_attn.use_position_ids = (not self.use_chain_mode)
         
         # Set mode-specific kernels

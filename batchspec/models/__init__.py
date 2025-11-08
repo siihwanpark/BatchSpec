@@ -39,7 +39,6 @@ from .configs import (
 from .modules import (
     BaseAttention,
     GatedLoRAAttention,
-    AttentionMixin,
     RoPEMixin,
     RMSNorm,
     FeedForward,
@@ -80,7 +79,6 @@ __all__ = [
     
     # Base classes
     "BaseAttention",
-    "AttentionMixin",
     "BaseTransformer",
     "BaseTransformerBlock",
     "GatedLoRATransformerBlock",

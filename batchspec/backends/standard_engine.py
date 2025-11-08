@@ -1,7 +1,7 @@
 """Standard backend engine for autoregressive generation."""
 
 from pathlib import Path
-from typing import Optional
+from typing import List
 
 import torch
 import flashinfer
@@ -10,30 +10,16 @@ from transformers import PreTrainedTokenizer
 
 from .base import BaseEngine
 from .utils import sample, apply_tp
+from .continuous import Sequence, Scheduler, BatchPack, BatchBuilderMixin, SchedulerTracer
 from batchspec.profiler import get_active_profiler, cpu_bucket_timer
 from batchspec.models import get_model
 
-class StandardEngine(BaseEngine):
+class StandardEngine(BaseEngine, BatchBuilderMixin):
     """Standard backend engine for autoregressive generation.
     
     Supports prefill and decode phases with FlashInfer attention.
     """
-    
-    def __init__(self, tokenizer: PreTrainedTokenizer, dtype: torch.dtype = torch.bfloat16, device: str = "cuda:0"):
-        """Initialize the engine.
-        
-        Args:
-            tokenizer: HuggingFace tokenizer
-            dtype: Data type for computations
-            device: Device to run computations on
-        """
-        super().__init__(tokenizer, dtype, device)
 
-        self.prefill_forward = lambda model, x, input_pos, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen: \
-            model(x, input_pos, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen, attn_type='prefill')
-        self.decode_forward = lambda model, x, input_pos, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen: \
-            model(x, input_pos, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen, attn_type='decode')
-    
     def load_model(
         self,
         model_name: str,
@@ -73,7 +59,8 @@ class StandardEngine(BaseEngine):
         max_batch_size: int = 1,
         max_seq_length: int = 2048,
         page_size: int = 16,
-        prefill_chunk_size: int = 128
+        prefill_chunk_size: int = 128,
+        decode_length: int = 1
     ):
         """Setup KV caches and attention wrappers.
         
@@ -82,172 +69,71 @@ class StandardEngine(BaseEngine):
             max_seq_length: Maximum sequence length
             page_size: Size of each page
             prefill_chunk_size: Chunk size for prefill
+            decode_length: number of tokens to decode
         """
         # Setup base caches (add 1 for potential decode token)
         self.max_seq_len = max_seq_length
+        self.page_size = page_size
         super().setup_caches(max_batch_size, max_seq_length + 1, page_size, prefill_chunk_size)
-        
-        # Create attention buffers
-        self.prefill_buffer = self._create_attention_buffer(384)  # 3 * 128MB
-        self.decode_buffer = self._create_attention_buffer(384)
-        
+
         # Create attention wrappers
-        self.attn_wrappers = {
-            "prefill": self._create_attention_wrapper(
-                self.prefill_buffer,
-                qo_length=prefill_chunk_size
-            ),
-            "decode": self._create_attention_wrapper(
-                self.decode_buffer,
-                qo_length=1
-            ),
-        }
-        
-        # Register with custom ops
-        self._register_attention_wrappers({
-            "attn_prefill": self.attn_wrappers["prefill"],
-            "attn_decode": self.attn_wrappers["decode"],
-        })
+        self.attn_buffer = self._create_attention_buffer(384)
+        self.attn_wrapper = self._create_attention_wrapper(self.attn_buffer, qo_indptr=self.qo_indptr)
         
         # Setup model caches
+        max_num_pages = self.kv_page_table.max_num_pages_per_request * max_batch_size
         with torch.device(self.device):
-            self.model.setup_caches(num_pages=self.max_num_pages, page_size=self.page_size)
-    
+            self.model.setup_caches(
+                num_pages=max_num_pages,
+                page_size=page_size,
+                attn_kernel=self.attn_wrapper
+            )
+
+        # Setup scheduler
+        self.scheduler = Scheduler(
+            max_concurrency=max_batch_size,
+            prefill_chunk_len=prefill_chunk_size,
+            decode_len=decode_length,
+        )
+
+        # Setup tracer
+        self.tracer = SchedulerTracer(self.scheduler, color=True, show_queues=True)
+
+
     def compile(self):
         """Enable torch.compile for forward functions."""
         super().compile()
-        self.prefill_forward = torch.compile(self.prefill_forward)
-        self.decode_forward = torch.compile(self.decode_forward)
-    
-    def prefill(self, input_ids: Tensor, query_lens: Tensor) -> Tensor:
-        """Prefill input sequence and return first predicted token.
+        self.forward = torch.compile(self.forward)
+
+
+    def forward(self, batch: BatchPack) -> Tensor:
+        """Single step forward of continuous batching.
         
         Args:
-            input_ids: Input token IDs of shape (batch_size, seq_len)
-            query_lens: Actual length of each sequence
+            batch: BatchPack of input data
             
         Returns:
-            Next token predictions of shape (batch_size, 1)
+            Next token predictions of shape (nnz)
         """
-        self.clear_kv()
-        bsz, seq_len = input_ids.shape
-        
-        # Validate sequence length
-        assert seq_len % self.prefill_chunk_size == 0, \
-            f"Sequence length ({seq_len}) must be divisible by prefill_chunk_size ({self.prefill_chunk_size})"
-        
-        # Initialize state
-        last_logits = None  # Lazy init for tensor parallel
-        logit_recorded = torch.zeros(bsz, dtype=torch.bool, device=self.device)
-        
-        chunk_size = self.prefill_chunk_size
-        num_chunks = seq_len // chunk_size
-        
-        # Process in chunks
-        for i in range(num_chunks):
-            chunk_input_ids = input_ids[:, i*chunk_size:(i+1)*chunk_size]
-            chunk_query_lens = torch.clamp(query_lens - (i * chunk_size), min=0, max=chunk_size)
-            
-            # Skip if all padding
-            if torch.all(chunk_query_lens == 0):
-                continue
-            
-            # Prepare and run forward
-            self.pre_prefill()
-            with torch.inference_mode():
-                logits = self.prefill_forward(
-                    model=self.model,
-                    x=chunk_input_ids,
-                    input_pos=torch.full((bsz,), i*chunk_size, dtype=torch.int32, device=self.device),
-                    kv_append_indptr=self.qo_indptr * chunk_size,
-                    kv_page_indices=self.paged_kv_indices,
-                    kv_page_indptr=self.paged_kv_indptr,
-                    kv_page_lastlen=self.paged_kv_last_page_len,
-                )
-            
-            # Lazy init last_logits
-            if last_logits is None:
-                last_logits = torch.full(
-                    (bsz, logits.shape[-1]), float('nan'),
-                    device=self.device, dtype=self.dtype
-                )
-            
-            # Extract logits for sequences ending in this chunk
-            target_indices_in_chunk = chunk_query_lens - 1
-            finishes_in_this_chunk = (query_lens > i*chunk_size) & (query_lens <= (i+1)*chunk_size)
-            target_sequences_mask = finishes_in_this_chunk & (~logit_recorded)
-            
-            target_batch_indices = torch.where(target_sequences_mask)[0]
-            if target_batch_indices.numel() > 0:
-                indices_in_chunk_to_grab = target_indices_in_chunk[target_batch_indices]
-                last_logits[target_batch_indices] = logits[target_batch_indices, indices_in_chunk_to_grab, :]
-                logit_recorded[target_batch_indices] = True
-            
-            # Handle padding
-            exists_padding = (chunk_query_lens < chunk_size)
-            if exists_padding.any():
-                self.delete_kv(chunk_size - chunk_query_lens)
-        
-        # Handle any remaining NaN (e.g., sequences with query_len=0)
-        if torch.isnan(last_logits).any():
-            print("Warning: Found NaN in last_logits. Replacing with zeros.")
-            last_logits = torch.nan_to_num(last_logits, nan=0.0)
-        
-        # Sample next tokens
-        return sample(last_logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
-    
-    def pre_prefill(self):
-        """Prepare for prefill step."""
-        self.insert_kv(self.prefill_chunk_size)
-        self.attn_wrappers["prefill"].plan(
-            qo_indptr=self.qo_indptr * self.prefill_chunk_size,
-            paged_kv_indptr=self.paged_kv_indptr,
-            paged_kv_indices=self.paged_kv_indices,
-            paged_kv_last_page_len=self.paged_kv_last_page_len,
-            num_qo_heads=self.model.config.n_head,
-            num_kv_heads=self.model.config.n_local_heads,
-            head_dim_qk=self.model.config.head_dim,
-            page_size=self.page_size,
-            q_data_type=self.dtype,
-            causal=True,
-        )
-    
-    def decode(self, input_ids: Tensor) -> Tensor:
-        """Decode one step.
-        
-        Args:
-            input_ids: Input token IDs of shape (batch_size, 1)
-            
-        Returns:
-            Next token predictions of shape (batch_size, 1)
-        """
-        dec_len = input_ids.shape[1]
-        assert dec_len == 1, f"Decode expects seq_len=1, got {dec_len}"
-        
-        # Prepare and run forward
-        self.pre_decode()
+        self.pre_forward(batch)
         with torch.inference_mode():
-            logits = self.decode_forward(
-                model=self.model,
-                x=input_ids,
-                input_pos=self.cachelens - 1,
-                kv_append_indptr=self.qo_indptr,
-                kv_page_indices=self.paged_kv_indices,
-                kv_page_indptr=self.paged_kv_indptr,
-                kv_page_lastlen=self.paged_kv_last_page_len,
-            )
+            logits = self.model(
+                input_ids=batch.input_ids,
+                position_offsets=batch.position_ids_or_offsets,
+                qo_indptr=batch.qo_indptr,
+                kv_page_table=self.kv_page_table,
+            ) # [nnz, vocab_size]
         
-        # Sample next tokens
-        return sample(logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
-    
-    def pre_decode(self):
-        """Prepare for decode step."""
-        self.insert_kv(1)
-        self.attn_wrappers["decode"].plan(
-            qo_indptr=self.qo_indptr,
-            paged_kv_indptr=self.paged_kv_indptr,
-            paged_kv_indices=self.paged_kv_indices,
-            paged_kv_last_page_len=self.paged_kv_last_page_len,
+        last_logits = logits[batch.qo_indptr[1:]-1, :] # [n_seqs, vocab_size]
+        return sample(last_logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
+
+    def pre_forward(self, batch: BatchPack):
+        """Prepare for forward step."""
+        self.attn_wrapper.plan(
+            qo_indptr=batch.qo_indptr,
+            paged_kv_indptr=self.kv_page_table.paged_kv_indptr,
+            paged_kv_indices=self.kv_page_table.paged_kv_indices,
+            paged_kv_last_page_len=self.kv_page_table.paged_kv_last_page_len,
             num_qo_heads=self.model.config.n_head,
             num_kv_heads=self.model.config.n_local_heads,
             head_dim_qk=self.model.config.head_dim,
@@ -255,6 +141,35 @@ class StandardEngine(BaseEngine):
             q_data_type=self.dtype,
             causal=True,
         )
+
+    def generate(self, sequences: List[Sequence]):
+        """
+        Generate tokens from prompts.
+
+        Args:
+            sequences: List[Sequence], the sequences to generate from.
+
+        Returns:
+            List[Sequence], the completed sequences.
+        """
+        # clear KV cache
+        self.kv_page_table.clear_kv(self.model)
+        
+        step = 0
+        self.scheduler.add_sequences(sequences)
+        while not self.scheduler.is_done():
+            if self.scheduler.realloc:
+                workloads = self.scheduler.plan()
+            self.tracer.on_plan(step, workloads, self.kv_page_table)
+        
+            batch = self.build_batch(workloads, self.kv_page_table)
+            next_tokens = self.forward(batch)
+
+            self.scheduler.process_results(workloads, next_tokens, self.eos_token_id, self.kv_page_table)
+            self.tracer.on_update(step, workloads, self.kv_page_table, next_tokens)
+            step += 1
+        
+        return self.scheduler.completed
 
     def generate_batch(self, input_ids, query_lens):
         """
