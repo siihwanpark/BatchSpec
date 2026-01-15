@@ -50,7 +50,7 @@ torchrun --standalone --nproc_per_node=1 -m batchspec.run\
     --rank_group 0\
     --dataset AIME2025 --force_budget\
     --dtype bfloat16\
-    --batch_size 2 --prefix_len_list 1024 2048 --max_gen_len 128\
+    --batch_size 4 --prefix_len_list 1024 2048 --max_gen_len 128\
     --temperature 0.0\
     --printoutput\
     --profiling\

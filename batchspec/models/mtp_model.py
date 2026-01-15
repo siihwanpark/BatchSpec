@@ -1,6 +1,6 @@
 """Multi-Token Prediction (MTP) transformer implementation."""
 
-from typing import Optional, Any
+from typing import Optional, Any, TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -10,6 +10,9 @@ from torch import Tensor
 from .configs import ModelArgs, LoRAConfig
 from .modules import RoPEMixin, MTPAttention, StandardKVCache, SamplerHead
 from .base_model import BaseTransformer, GatedLoRATransformerBlock
+
+if TYPE_CHECKING:
+    from batchspec.backends.base.page_table import PageTable
 
 
 class MTPTransformer(BaseTransformer, RoPEMixin):
@@ -41,20 +44,21 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
             attention = attention_class(self.config, self.lora_config)
             block = GatedLoRATransformerBlock(self.config, attention, self.lora_config)
             layers.append(block)
-            
+        
         return nn.ModuleList(layers)
     
     def _get_attention_class(self):
         """Return MTPAttention class."""
         return MTPAttention
     
-    def setup_caches(self, num_pages: int, page_size: int, attn_kernel: Any):
+    def setup_caches(self, num_pages: int, page_size: int, causal_attn_kernel: Any, non_causal_attn_kernel: Any):
         """Setup KV caches and attention kernels.
         
         Args:
             num_pages: Total number of pages to allocate
             page_size: Size of each page (tokens per page)
-            attn_kernel: Attention kernel
+            causal_attn_kernel: Causal attention kernel
+            non_causal_attn_kernel: Non-causal attention kernel
         """
         # Setup RoPE function (uses position IDs)
         rope_func = self._setup_rope_kernels(use_position_ids=True)
@@ -71,7 +75,8 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
             attn = layer.attention
 
             attn.rope = rope_func
-            attn.attn_kernel = attn_kernel
+            attn.causal_attn_kernel = causal_attn_kernel
+            attn.non_causal_attn_kernel = non_causal_attn_kernel
             attn.kv_cache = StandardKVCache(
                 max_num_pages=num_pages,
                 page_size=page_size,
@@ -99,7 +104,7 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
     def _forward_lm_head(
         self, 
         x: Tensor,
-        gate_mask: Optional[Tensor] = None
+        gate_mask: Tensor
     ) -> Tensor:
         """Forward pass through language model head with optional masking.
         
@@ -134,29 +139,31 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
         position_ids: Tensor,
         qo_indptr: Tensor,
         kv_page_table: "PageTable",
+        causal: bool = True,
     ) -> tuple[Tensor, Tensor]:
         """Forward pass through the MTP transformer.
         
         Args:
             input_ids: Input token indices of shape (batch_size, seq_len)
-            gate_mask: Gate mask for LoRA of shape (, seq_len)
+            gate_mask: Gate mask for LoRA of shape (batch_size, seq_len)
             position_ids: Position IDs for RoPE
             qo_indptr: Index pointer for Query/Output tokens
             kv_page_table: Page table for KV cache
-            
+            causal: Whether to use causal attention
         Returns:
             Tuple of (logits, hidden_states)
         """
         # Embed tokens
         x = self.tok_embeddings(input_ids)
-        
+
         # Forward pass through transformer layers with gated LoRA
         for layer in self.layers:
             x = layer(x,
                 gate_mask=gate_mask,
-                position_ids=position_ids,
                 qo_indptr=qo_indptr,
+                position_ids=position_ids,
                 kv_page_table=kv_page_table,
+                causal=causal,
             )
         
         # Final normalization

@@ -65,7 +65,7 @@ class BaseEngine(AttentionWrapperMixin):
 
     def setup_caches(
         self,
-        max_batch_size: int = 1,
+        batch_size: int = 1,
         max_cache_length: int = 2048,
         page_size: int = 16,
         prefill_chunk_size: int = 128,
@@ -74,20 +74,20 @@ class BaseEngine(AttentionWrapperMixin):
         """Setup KV page table.
         
         Args:
-            max_batch_size: Maximum batch size
+            batch_size: Batch size
             max_cache_length: Maximum cache length
             page_size: Size of each page
             prefill_chunk_size: Chunk size for prefill
             **kwargs: Additional backend-specific arguments
         """
-        self.batch_size = max_batch_size
+        self.batch_size = batch_size
         self.prefill_chunk_size = prefill_chunk_size
         
         # Initialize KV page table
-        self.qo_indptr = torch.arange(max_batch_size + 1, dtype=torch.int32, device=self.device)
+        self.qo_indptr = torch.arange(batch_size + 1, dtype=torch.int32, device=self.device)
         self.kv_page_table = PageTable(
             page_size=page_size,
-            max_batch_size=max_batch_size,
+            max_batch_size=batch_size,
             max_num_pages_per_request=(max_cache_length + page_size - 1) // page_size,
             device=self.device
         )

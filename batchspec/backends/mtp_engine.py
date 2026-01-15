@@ -103,7 +103,7 @@ class MTPEngine(BaseEngine):
     
     def setup_caches(
         self,
-        max_batch_size: int = 1,
+        batch_size: int = 1,
         max_seq_length: int = 2048,
         page_size: int = 16,
         prefill_chunk_size: int = 128
@@ -111,7 +111,7 @@ class MTPEngine(BaseEngine):
         """Setup KV caches and attention wrappers.
         
         Args:
-            max_batch_size: Maximum batch size
+            batch_size: Batch size
             max_seq_length: Maximum sequence length
             page_size: Size of each page
             prefill_chunk_size: Chunk size for prefill
@@ -122,34 +122,42 @@ class MTPEngine(BaseEngine):
         self.max_cache_len = max_seq_length + self.draft_and_verify_len + 1
         self.page_size = page_size
 
-        super().setup_caches(max_batch_size, self.max_cache_len, page_size, prefill_chunk_size)
+        super().setup_caches(batch_size, self.max_cache_len, page_size, prefill_chunk_size)
         
         # Set common attention masks and position ids
         self.setup_common_attn_mask_and_position_ids()
 
-        # Create attention buffers
-        self.attn_buffer = self._create_attention_buffer(384)
-
-        max_bytes_for_attn_masks = (max_batch_size * (self.draft_and_verify_len * self.max_cache_len)) // 8 + 1
-        self.custom_mask_buf = torch.empty(max_bytes_for_attn_masks, dtype=torch.uint8, device=self.device)
-        self.mask_indptr_buf = torch.arange(max_batch_size + 1, dtype=torch.int32, device=self.device)
-        
-        # Create attention wrappers
-        self.attn_wrapper = self._create_attention_wrapper(
-            self.attn_buffer,
+        # Create causal attention wrapper
+        self.causal_attn_buffer = self._create_attention_buffer(384)
+        self.causal_attn_wrapper = self._create_attention_wrapper(
+            self.causal_attn_buffer,
             qo_indptr=self.qo_indptr,
+        )
+
+        # Create non-causal attention wrapper
+        self.non_causal_qo_indptr = torch.arange(self.batch_size + 1, dtype=torch.int32, device=self.device)
+        self.non_causal_attn_buffer = self._create_attention_buffer(384)
+        
+        max_bytes_for_attn_masks = (self.batch_size * (self.draft_and_verify_len * self.max_cache_len)) // 8 + 1
+        self.custom_mask_buf = torch.empty(max_bytes_for_attn_masks, dtype=torch.uint8, device=self.device)
+        self.mask_indptr_buf = torch.arange(self.batch_size + 1, dtype=torch.int32, device=self.device)
+        
+        self.non_causal_attn_wrapper = self._create_attention_wrapper(
+            self.non_causal_attn_buffer,
+            qo_indptr=self.non_causal_qo_indptr,
             use_custom_mask=True,
             custom_mask_buf=self.custom_mask_buf,
             mask_indptr_buf=self.mask_indptr_buf,
         )
 
         # Setup model caches
-        max_num_pages = self.kv_page_table.max_num_pages_per_request * max_batch_size
+        max_num_pages = self.kv_page_table.max_num_pages_per_request * batch_size
         with torch.device(self.device):
             self.model.setup_caches(
                 num_pages=max_num_pages,
                 page_size=page_size,
-                attn_kernel=self.attn_wrapper
+                causal_attn_kernel=self.causal_attn_wrapper,
+                non_causal_attn_kernel=self.non_causal_attn_wrapper,
             )
 
 
@@ -178,9 +186,10 @@ class MTPEngine(BaseEngine):
         if attn_mask is not None:
             wrapper_plan_kwargs["custom_mask"] = attn_mask
             wrapper_plan_kwargs["causal"] = False
+            self.non_causal_attn_wrapper.plan(**wrapper_plan_kwargs)
         else:
             wrapper_plan_kwargs["causal"] = True
-        self.attn_wrapper.plan(**wrapper_plan_kwargs)
+            self.causal_attn_wrapper.plan(**wrapper_plan_kwargs)
 
 
     def forward(self,
@@ -204,7 +213,7 @@ class MTPEngine(BaseEngine):
             - logits: [bsz, seq_len, vocab_size]
             - hidden_states: [bsz, seq_len, hidden_size]
         """
-        self.pre_forward(qo_indptr, attn_mask)
+        self.pre_forward(qo_indptr=qo_indptr, attn_mask=attn_mask)
         with torch.inference_mode():
             logits, hidden_states = self.model(
                 input_ids=input_ids,
@@ -212,6 +221,7 @@ class MTPEngine(BaseEngine):
                 position_ids=position_ids,
                 qo_indptr=qo_indptr,
                 kv_page_table=self.kv_page_table,
+                causal=attn_mask is None,
             ) # [bsz, seq_len, vocab_size], [bsz, seq_len, hidden_size]
         
         return logits, hidden_states
@@ -421,19 +431,13 @@ class MTPEngine(BaseEngine):
                 profiler.set_step_seq_len(self.kv_page_table.cachelens)
 
                 if first_draft:
-                    # First draft (no verification)
+                    # First draft (no verification) -> Effectively no token is generated
                     input_ids, gate_mask = self.interleave_mask_tokens(input_ids=next_tokens) # [bsz, 1+k], [bsz, 1+k]
                     logits, hidden_states = self.draft(input_ids=input_ids, gate_mask=gate_mask) # [bsz, 1+k, vocab_size], [bsz, 1+k, hidden_size]
                     
                     # tokens_buffer[:, 0] : next_tokens / tokens_buffer[:, 1:] : draft_tokens
                     tokens_buffer[:, :1] = sample(logits[:, 0], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
                     tokens_buffer[:, 1:] = self.sampler_draft(tokens_buffer[:, :1], hidden_states[:, 1:]) # [bsz, k], [bsz, k, vocab_size]
-
-                    # register accept_nums to Profiler
-                    profiler.set_step_tokens(bsz)
-                    
-                    output[batch_indices, num_generated_tokens + 1] = tokens_buffer[:, 0]
-                    num_generated_tokens += 1
                     first_draft = False
                 else:
                     # Proceeding drafts (with verification)
@@ -471,8 +475,8 @@ class MTPEngine(BaseEngine):
                     selected_hidden_states = hidden_states[batch_indices, accept_nums-1, 1:, :] # [bsz, k, hidden_size]
                     tokens_buffer[:, 1:] = self.sampler_draft(tokens_buffer[:, :1], selected_hidden_states) # [bsz, k], [bsz, k, vocab_size]
                     if (not force_budget) and (eos_accepted).any(): terminal = True
-
-            model_steps += 1
+                    model_steps += 1
+                    
             if (not force_budget) and (tokens_buffer[:, 0] == eos_token_id).any(): terminal = True
         
         profiler.end_run()
@@ -481,6 +485,18 @@ class MTPEngine(BaseEngine):
         return output, num_generated_tokens, model_steps
 
     # =============================== Helper functions ===============================
+    def get_causal_mask(self, bsz: int, cachelens: int, declen: int) -> Tensor:
+        """
+        Get the causal mask for the attention.
+        Args:
+            bsz: The batch size.
+            cachelens: The number of cached tokens.
+            declen: The length of the decoded tokens.
+        Returns:
+            The causal mask for the attention. Shape: [declen, cachelens+declen]
+        """
+        return torch.tril(torch.ones(bsz, declen, cachelens+declen, device=self.device, dtype=torch.bool))
+    
     def setup_common_attn_mask_and_position_ids(self):
         """
         Build non-causal MTP attention mask (bool) and position_ids.

@@ -63,7 +63,7 @@ class Runner:
             32: 128, 64: 128, 128: 64, 256: 32
         }
         cache_params = {
-            'max_batch_size': self.args.batch_size, 
+            'batch_size': self.args.batch_size, 
             'max_seq_length': self.args.max_len, 
             'page_size': 16,
             'prefill_chunk_size': prefill_chunk_size.get(self.args.batch_size, 128)

@@ -55,7 +55,7 @@ class StandardEngine(BaseEngine):
     
     def setup_caches(
         self,
-        max_batch_size: int = 1,
+        batch_size: int = 1,
         max_seq_length: int = 2048,
         page_size: int = 16,
         prefill_chunk_size: int = 128,
@@ -64,7 +64,7 @@ class StandardEngine(BaseEngine):
         """Setup KV caches and attention wrappers.
         
         Args:
-            max_batch_size: Maximum batch size
+            batch_size: Batch size
             max_seq_length: Maximum sequence length
             page_size: Size of each page
             prefill_chunk_size: Chunk size for prefill
@@ -73,14 +73,14 @@ class StandardEngine(BaseEngine):
         # Setup base caches (add 1 for potential decode token)
         self.max_seq_len = max_seq_length
         self.page_size = page_size
-        super().setup_caches(max_batch_size, max_seq_length + 1, page_size, prefill_chunk_size)
+        super().setup_caches(batch_size, max_seq_length + 1, page_size, prefill_chunk_size)
 
         # Create attention wrappers
         self.attn_buffer = self._create_attention_buffer(384)
         self.attn_wrapper = self._create_attention_wrapper(self.attn_buffer, qo_indptr=self.qo_indptr)
         
         # Setup model caches
-        max_num_pages = self.kv_page_table.max_num_pages_per_request * max_batch_size
+        max_num_pages = self.kv_page_table.max_num_pages_per_request * batch_size
         with torch.device(self.device):
             self.model.setup_caches(
                 num_pages=max_num_pages,
@@ -105,13 +105,11 @@ class StandardEngine(BaseEngine):
         Returns:
             Logits of shape (bsz, seq_len, vocab_size)
         """
-        past_cachelens = self.kv_page_table.cachelens.clone()
-
         self.pre_forward(qo_indptr)
         with torch.inference_mode():
             logits = self.model(
                 input_ids=input_ids,
-                position_offsets=past_cachelens,
+                position_offsets=self.kv_page_table.cachelens,
                 qo_indptr=qo_indptr,
                 kv_page_table=self.kv_page_table,
             ) # [bsz, seq_len, vocab_size]
@@ -160,6 +158,7 @@ class StandardEngine(BaseEngine):
                 input_ids=chunk_input_ids,
                 qo_indptr=qo_indptr,
             ) # [bsz, chunk_seq_len, vocab_size]
+            import pdb; pdb.set_trace()
 
         return sample(logits[:, -1, :], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
 
