@@ -2,10 +2,8 @@
 
 import torch
 import torch.distributed as dist
-from tqdm import tqdm
 
 from batchspec.models import LoRAConfig
-from batchspec.backends.continuous import Sequence
 
 
 class Runner:
@@ -18,7 +16,7 @@ class Runner:
     - Output processing and statistics
     """
     
-    def __init__(self, args, engine, tokenizer, dataset=None, batch_sampler=None):
+    def __init__(self, args, engine, tokenizer, batch_sampler=None):
         """
         Initialize the runner.
         
@@ -26,19 +24,13 @@ class Runner:
             args: Command-line arguments
             engine: Backend engine (StandardEngine or MTPEngine)
             tokenizer: HuggingFace tokenizer
-            dataset: Dataset for E2E mode (mutually exclusive with batch_sampler)
-            batch_sampler: BatchSampler for benchmark mode (mutually exclusive with dataloader)
+            batch_sampler: BatchSampler for benchmark dataset
         """
         self.args = args
         self.engine = engine
-        self.dataset = dataset
         self.batch_sampler = batch_sampler
         self.device = engine.device
         
-        if dataset is not None and batch_sampler is not None:
-            raise ValueError("Provide either dataset or batch_sampler, not both.")
-        self.mode = "e2e" if dataset is not None else "benchmark"
-
     def setup(self, process_group):
         """
         Setup the engine with model, caches, and sampling parameters.
@@ -68,7 +60,7 @@ class Runner:
 
         prefill_chunk_size = {
             2: 128, 4: 128, 8: 128, 16: 128, 
-            32: 128, 64: 64, 128: 16, 256: 8
+            32: 128, 64: 128, 128: 64, 256: 32
         }
         cache_params = {
             'max_batch_size': self.args.batch_size, 
@@ -85,65 +77,39 @@ class Runner:
         )
         self.engine.setup_special_tokens()
 
-    def run_e2e(self):
+
+    def run(self):
         """
-        Main execution loop.
+        Main execution loop for benchmarking.
         
-        Iterates through batches, calls engine.generate(), and prints statistics.
+        Iterates through batches, calls engine.generate_batch(), and prints statistics.
         """
         total_gen_tokens = 0
         total_model_steps = 0
+        input_ids = self.batch_sampler.sample_batch().to(self.device)
         
-        # Wrapping dataset with List[Sequence]
-        sequences = [
-            Sequence(seq_id=seq_id, max_seq_len=self.args.max_len, prompt_ids=input_ids, prompt_len=len(input_ids))
-            for seq_id, input_ids in enumerate(self.dataset['input_ids'])
-        ]
+        # Clear the KV cache for the first run
+        self.engine.kv_page_table.clear_kv(self.engine.model)
 
-        completed_sequences = self.engine.generate(sequences)
-        
-        import pdb; pdb.set_trace()
-
-        # Print output if requested
-        if self.args.printoutput:
-            self._print_output(run_idx, output, query_lens, num_generated_tokens, num_total_tokens, model_steps)
-        
-        # Accumulate statistics
-        total_gen_tokens += num_generated_tokens.sum().item()
-        total_model_steps += model_steps
-        
-        # Distributed barrier if needed
-        if self.args.rank_group and len(self.args.rank_group) > 1:
-            dist.barrier()
-        
-        # Print final statistics
-        bsz = input_ids.shape[0]
-        print(f"Total generated tokens: {total_gen_tokens}")
-        print(f"Total model steps (batch_size): {total_model_steps} (batch_size: {bsz})")
-        print(f"➡️  Mean generated tokens: {total_gen_tokens / (total_model_steps * bsz):.2f}")
-
-    def run_benchmark(self):
-        """
-        Main execution loop.
-        
-        Iterates through batches, calls engine.generate(), and prints statistics.
-        """
-        total_gen_tokens = 0
-        total_model_steps = 0
-        
-        num_total_runs = self.args.num_total_runs
-        iterator = range(num_total_runs)
-        
-        for run_idx in tqdm(iterator, total=num_total_runs):
-            # Sample batch
-            input_ids, query_lens = self._sample_batch()
+        # Run the benchmark
+        for i, prefix_len in enumerate(self.args.prefix_len_list):
+            self.args.prefix_len = prefix_len
+            if self.args.backend == "mtp":
+                self.args.max_total_tokens = self.args.batch_size * self.args.max_gen_len
+                self.args.max_len = self.args.prefix_len + (self.args.max_gen_len * 3) # prepare some margin for the fastest sequence
+            else:
+                self.args.max_len = self.args.prefix_len + (self.args.max_gen_len * 3) # prepare some margin for the fastest sequence
+            
+            start_idx = self.args.prefix_len_list[i-1] if i > 0 else 0
+            end_idx = self.args.prefix_len_list[i]
+            current_input_ids = input_ids[:, start_idx:end_idx]
             
             # Call engine.generate()
-            output, num_generated_tokens, num_total_tokens, model_steps = self.engine.generate_batch(input_ids=input_ids, query_lens=query_lens)
+            output, num_generated_tokens, model_steps = self.engine.generate_batch(input_ids=current_input_ids, max_gen_len=self.args.max_gen_len, prefix_len=prefix_len)
             
             # Print output if requested
             if self.args.printoutput:
-                self._print_output(run_idx, output, query_lens, num_generated_tokens, num_total_tokens, model_steps)
+                self._print_output(prefix_len, output, num_generated_tokens, model_steps)
             
             # Accumulate statistics
             total_gen_tokens += num_generated_tokens.sum().item()
@@ -165,26 +131,17 @@ class Runner:
         query_lens = batch['attention_mask'].to(self.device).sum(dim=-1).to(torch.int32)
         return input_ids, query_lens
     
-    def _sample_batch(self):
-        """Sample batch from batch_sampler (benchmark mode)."""
-        input_ids = self.batch_sampler.sample_batch().to(self.device)
-        bsz = input_ids.shape[0]
-        seq_len = input_ids.shape[1]
-        query_lens = torch.ones(bsz, device=self.device, dtype=torch.int32) * seq_len
-        return input_ids, query_lens
-    
-    def _print_output(self, run_idx, output, query_lens, num_generated_tokens, num_total_tokens, model_steps):
+    def _print_output(self, prefix_len, output, num_generated_tokens, model_steps):
         """Print generated output for each sequence."""
         bsz = output.shape[0]
-        print("\n" + "="*50 + f" Run {run_idx} Output " + "="*50)
-        for i in range(bsz):
-            mean_tokens_per_step = (num_generated_tokens[i] / model_steps).item()
-            print(f"########## Sequence {i} ########## "
-                  f"(Total generated tokens: {num_generated_tokens[i]}, "
-                  f"mean generated tokens per step: {mean_tokens_per_step:.2f})")
-            decoded = self.engine.tokenizer.decode(
-                output[i, query_lens[i]:num_total_tokens[i]], 
-                skip_special_tokens=True
-            )
-            print(decoded)
+        print("\n" + "="*50 + f" Prefix Length {prefix_len} Output " + "="*50)
+        mean_tokens_per_step = (num_generated_tokens[0] / model_steps).item()
+        print(f"########## Sequence 0 ########## "
+                f"(Total generated tokens: {num_generated_tokens[0]}, "
+                f"mean generated tokens per step: {mean_tokens_per_step:.2f})")
+        decoded = self.engine.tokenizer.decode(
+            output[0, :num_generated_tokens[0]+1], 
+            skip_special_tokens=True
+        )
+        print(decoded)
 

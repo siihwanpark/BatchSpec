@@ -75,7 +75,7 @@ class GatedLoRALinear(nn.Module):
             W = state_dict.pop(prefix + "lora_B.weight")
             state_dict[prefix + "lora_BT"] = W.t().contiguous()
     
-    def forward(self, x: torch.Tensor, gate_mask: Optional[torch.Tensor] = None):
+    def forward(self, x: torch.Tensor, gate_mask: torch.Tensor):
         """Forward pass with optional gated LoRA.
         
         Args:

@@ -10,11 +10,10 @@ from transformers import PreTrainedTokenizer
 
 from .base import BaseEngine
 from .utils import sample, apply_tp
-from .continuous import Sequence, Scheduler, BatchPack, BatchBuilderMixin, SchedulerTracer
 from batchspec.profiler import get_active_profiler, cpu_bucket_timer
 from batchspec.models import get_model
 
-class StandardEngine(BaseEngine, BatchBuilderMixin):
+class StandardEngine(BaseEngine):
     """Standard backend engine for autoregressive generation.
     
     Supports prefill and decode phases with FlashInfer attention.
@@ -88,17 +87,7 @@ class StandardEngine(BaseEngine, BatchBuilderMixin):
                 page_size=page_size,
                 attn_kernel=self.attn_wrapper
             )
-
-        # Setup scheduler
-        self.scheduler = Scheduler(
-            max_concurrency=max_batch_size,
-            prefill_chunk_len=prefill_chunk_size,
-            decode_len=decode_length,
-        )
-
-        # Setup tracer
-        self.tracer = SchedulerTracer(self.scheduler, color=True, show_queues=True)
-
+            
 
     def compile(self):
         """Enable torch.compile for forward functions."""
@@ -106,31 +95,35 @@ class StandardEngine(BaseEngine, BatchBuilderMixin):
         self.forward = torch.compile(self.forward)
 
 
-    def forward(self, batch: BatchPack) -> Tensor:
-        """Single step forward of continuous batching.
+    def forward(self, input_ids: Tensor, qo_indptr: Tensor) -> Tensor:
+        """Single step forward.
         
         Args:
-            batch: BatchPack of input data
+            input_ids: Input token IDs [bsz, seq_len]
+            qo_indptr: Index pointer for Query/Output tokens [bsz + 1]
             
         Returns:
-            Next token predictions of shape (nnz)
+            Logits of shape (bsz, seq_len, vocab_size)
         """
-        self.pre_forward(batch)
+        past_cachelens = self.kv_page_table.cachelens.clone()
+
+        self.pre_forward(qo_indptr)
         with torch.inference_mode():
             logits = self.model(
-                input_ids=batch.input_ids,
-                position_offsets=batch.position_ids_or_offsets,
-                qo_indptr=batch.qo_indptr,
+                input_ids=input_ids,
+                position_offsets=past_cachelens,
+                qo_indptr=qo_indptr,
                 kv_page_table=self.kv_page_table,
-            ) # [nnz, vocab_size]
+            ) # [bsz, seq_len, vocab_size]
         
-        last_logits = logits[batch.qo_indptr[1:]-1, :] # [n_seqs, vocab_size]
-        return sample(last_logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
+        return logits
 
-    def pre_forward(self, batch: BatchPack):
+
+    def pre_forward(self, qo_indptr: Tensor):
         """Prepare for forward step."""
+        self.kv_page_table.insert_kv(qo_indptr[1:] - qo_indptr[:-1]) # insert KV cache for the new tokens
         self.attn_wrapper.plan(
-            qo_indptr=batch.qo_indptr,
+            qo_indptr=qo_indptr,
             paged_kv_indptr=self.kv_page_table.paged_kv_indptr,
             paged_kv_indices=self.kv_page_table.paged_kv_indices,
             paged_kv_last_page_len=self.kv_page_table.paged_kv_last_page_len,
@@ -142,36 +135,56 @@ class StandardEngine(BaseEngine, BatchBuilderMixin):
             causal=True,
         )
 
-    def generate(self, sequences: List[Sequence]):
-        """
-        Generate tokens from prompts.
 
+    def prefill(self, input_ids: Tensor) -> Tensor:
+        """Execute the chunked prefill with the pre-defined prefill chunk size and return the last token predictions.
+        
         Args:
-            sequences: List[Sequence], the sequences to generate from.
-
+            input_ids: Input token IDs [bsz, seq_len]
+            
         Returns:
-            List[Sequence], the completed sequences.
+            Next token predictions [bsz, 1]
+        """        
+        bsz, seq_len = input_ids.shape
+        assert seq_len % self.prefill_chunk_size == 0, f"The sequence length must be divisible by the prefill chunk size, but got seq_len={seq_len} and prefill_chunk_size={self.prefill_chunk_size}"
+        
+        chunk_size = self.prefill_chunk_size
+        num_chunks = seq_len // chunk_size
+        for i in range(num_chunks):
+            chunk_input_ids = input_ids[:, i*chunk_size:(i+1)*chunk_size]
+            chunk_seq_len = chunk_input_ids.shape[1]
+            
+            # Target prefill
+            qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * chunk_seq_len
+            logits = self.forward(
+                input_ids=chunk_input_ids,
+                qo_indptr=qo_indptr,
+            ) # [bsz, chunk_seq_len, vocab_size]
+
+        return sample(logits[:, -1, :], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
+
+    
+    def decode(self, input_ids: Tensor) -> Tensor:
+        """Execute the decode step and return the next token predictions.
+        
+        Args:
+            input_ids: Input token IDs [bsz, seq_len]
+            
+        Returns:
+            Next token predictions [bsz, 1]
         """
-        # clear KV cache
-        self.kv_page_table.clear_kv(self.model)
-        
-        step = 0
-        self.scheduler.add_sequences(sequences)
-        while not self.scheduler.is_done():
-            if self.scheduler.realloc:
-                workloads = self.scheduler.plan()
-            self.tracer.on_plan(step, workloads, self.kv_page_table)
-        
-            batch = self.build_batch(workloads, self.kv_page_table)
-            next_tokens = self.forward(batch)
+        bsz, seq_len = input_ids.shape
+        assert seq_len == 1, f"The input length must be 1 for decode, but got {seq_len}"
 
-            self.scheduler.process_results(workloads, next_tokens, self.eos_token_id, self.kv_page_table)
-            self.tracer.on_update(step, workloads, self.kv_page_table, next_tokens)
-            step += 1
+        logits = self.forward(
+            input_ids=input_ids,
+            qo_indptr=torch.arange(bsz + 1, device=self.device, dtype=torch.int32),
+        ) # [bsz, 1, vocab_size]
         
-        return self.scheduler.completed
+        return sample(logits[:, 0, :], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
 
-    def generate_batch(self, input_ids, query_lens):
+
+    def generate_batch(self, input_ids, max_gen_len: int, prefix_len: int):
         """
         Generate a batch of tokens using the standard autoregressive decoding.
         
@@ -179,20 +192,19 @@ class StandardEngine(BaseEngine, BatchBuilderMixin):
         Otherwise, the generation will proceed until the budget is exhausted by replacing </think> tokens to 'Wait' or 'Alternatively'.
         
         Args:
-            input_ids: [bsz, max_query_len]
-            query_lens: [bsz]
+            input_ids: [bsz, seq_len]
+            max_gen_len: Maximum generation length
 
         Returns:
-            output: [bsz, max_len+1]
-            num_generated_tokens: [bsz]
-            num_total_tokens: [bsz]
+            output: [bsz, max_gen_len]
+            num_generated_tokens: int
             model_steps: int
         """
 
         # Pre-link local variables to reduce indexing time
         bsz = input_ids.shape[0]
-        max_len = self.max_seq_len
         device = self.device
+
         force_budget = self.force_budget
         eos_token_id = self.eos_token_id
         suppress_token_id = self.suppress_token_id
@@ -200,44 +212,40 @@ class StandardEngine(BaseEngine, BatchBuilderMixin):
         
         # Define local variables
         model_steps = 0
-        max_query_len = query_lens.max()
-        num_total_tokens = query_lens.clone()
-        batch_indices = torch.arange(bsz, device=device)
+        num_generated_tokens = 0
+        output = torch.zeros(bsz, max_gen_len+1, device=device, dtype=torch.long)
 
-        output = torch.zeros(bsz, max_len+1, device=device, dtype=torch.long)
-        output[:, :max_query_len] = input_ids[:, :max_query_len]
-        
         # Prefill
-        next_tokens = self.prefill(input_ids=input_ids, query_lens=query_lens)
-        output[batch_indices, num_total_tokens] = next_tokens[:, 0]
-        num_total_tokens += 1
-        model_steps += 1
+        next_tokens = self.prefill(input_ids=input_ids)
+        output[:, 0] = next_tokens[:, 0]
         
         # Initialize the profiler (NullProfiler when profiling=False)
         profiler = get_active_profiler()
-        profiler.begin_run(bsz=bsz, label="generate_batch")
+        profiler.begin_run(bsz=bsz, label="decode", prefix_len=prefix_len)
 
         terminal = False
-        while num_total_tokens.max() < max_len and not terminal:
+        while num_generated_tokens < max_gen_len and not terminal:
             with profiler.step_timing_ctx():
-                profiler.set_step_seq_len(num_total_tokens)
+                profiler.set_step_seq_len(self.kv_page_table.cachelens)
 
                 # Decode
                 next_tokens = self.decode(input_ids=next_tokens)
                 profiler.set_step_tokens(bsz)
                 
-                # Force budget
-                if force_budget:
-                    replace_mask = (next_tokens[:, 0] == suppress_token_id)
-                    next_tokens[replace_mask, 0] = replace_token_ids[torch.randint(0, replace_token_ids.shape[0], (replace_mask.sum(),), device=self.device)]
+            # Force budget
+            if force_budget:
+                replace_mask = (next_tokens[:, 0] == suppress_token_id)
+                next_tokens[replace_mask, 0] = replace_token_ids[torch.randint(0, replace_token_ids.shape[0], (replace_mask.sum(),), device=self.device)]
 
-                # Update output
-                output[batch_indices, num_total_tokens] = next_tokens[:, 0]
-                num_total_tokens += 1
-                model_steps += 1
+            # Update output
+            output[:, num_generated_tokens+1] = next_tokens[:, 0]
+            num_generated_tokens += 1
+            model_steps += 1
             
             if (not force_budget) and (next_tokens[:, 0] == eos_token_id).any(): terminal = True
         
         profiler.end_run()
-        num_generated_tokens = num_total_tokens - query_lens
-        return output, num_generated_tokens, num_total_tokens, model_steps
+        self.kv_page_table.delete_kv(num_generated_tokens) # revert the KV cache to proceed next run with longer prefix
+        num_generated_tokens = torch.full((bsz,), num_generated_tokens, device=device, dtype=torch.int32)
+
+        return output, num_generated_tokens, model_steps

@@ -1,18 +1,18 @@
 import os
-import torch
+from tqdm import tqdm
+
 import torch.distributed as dist
-from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from batchspec.backends.utils import init_dist, setup_seed
 from batchspec.backends import StandardEngine, MTPEngine
 from batchspec.profiler import Profiler, register_active_profiler, release_active_profiler
-from batchspec.runner import Runner, load_dataset
-from batchspec.args import parse_e2e_args
+from batchspec.runner import Runner, BatchSampler, load_benchmark_dataset
+from batchspec.args import parse_args
 
 
 def main():
-    args = parse_e2e_args()
+    args = parse_args()
     
     rank, process_group = 0, None
     use_tp = len(args.rank_group) > 1 if args.rank_group else False
@@ -28,17 +28,13 @@ def main():
     
     try:
         setup_seed(args.seed)
-        print(f"Initializing end-to-end generation with FlashInfer...")
+        print(f"Initializing benchmark ...")
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path, padding_side="right", local_files_only=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
         # Prepare the dataset
-        dataset = load_dataset(
-            tokenizer=tokenizer, 
-            dataset_name=args.dataset,
-            num_questions_in_prompt=args.num_questions_in_prompt
-        )
+        dataset = load_benchmark_dataset(model_name=args.model_name, dataset_name=args.dataset)
 
         # Initialize the engine
         if args.backend == "standard":
@@ -48,19 +44,25 @@ def main():
         else:
             raise ValueError(f"Unsupported backend: {args.backend}")
 
-        # Initialize the runner
-        runner = Runner(args, engine, tokenizer, dataset=dataset)
-        runner.setup(process_group)
-        
+        # Initialize the caches with the maximum prefix length
+        print(f"Initializing the Caches with the maximum prefix length: {max(args.prefix_len_list)}")
+        args.max_len = max(args.prefix_len_list) + (args.max_gen_len * 3)  # For the initialization of caches
+
         if args.profiling:
             # Initialize the profiler
             prof = Profiler(runner_args=args)
             register_active_profiler(prof)
             prof.attach_model(engine.model, use_gated_lora=args.backend == "mtp")
             prof.attach_engine(engine)
-            
-        # Run the benchmark
-        runner.run_e2e()
+
+        batch_sampler = BatchSampler(dataset=dataset, tokenizer=tokenizer, batch_size=args.batch_size, 
+            seq_len=max(args.prefix_len_list), margin_before_eos=5 * args.max_gen_len, pretokenize=True, seed=args.seed)
+        runner = Runner(args, engine, tokenizer, batch_sampler=batch_sampler)
+        runner.setup(process_group)
+
+        for run_idx in tqdm(range(args.num_total_runs), total=args.num_total_runs, desc="Running benchmark"):
+            print("\n" + "="*50 + f" Run {run_idx} Start " + "="*50)
+            runner.run()
         
         if args.profiling:
             # Save the profiling results and unregister the profiler

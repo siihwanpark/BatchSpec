@@ -1,6 +1,6 @@
 """Multi-Token Prediction (MTP) transformer implementation."""
 
-from typing import Optional
+from typing import Optional, Any
 
 import torch
 import torch.nn as nn
@@ -48,13 +48,13 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
         """Return MTPAttention class."""
         return MTPAttention
     
-    def setup_caches(self, num_pages: int, page_size: int, **kwargs):
+    def setup_caches(self, num_pages: int, page_size: int, attn_kernel: Any):
         """Setup KV caches and attention kernels.
         
         Args:
             num_pages: Total number of pages to allocate
             page_size: Size of each page (tokens per page)
-            **kwargs: Additional arguments (ignored)
+            attn_kernel: Attention kernel
         """
         # Setup RoPE function (uses position IDs)
         rope_func = self._setup_rope_kernels(use_position_ids=True)
@@ -69,22 +69,16 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
         # Setup attention kernels and KV caches for each layer
         for layer in self.layers:
             attn = layer.attention
-            
-            # Initialize KV cache
-            attn.kv_cache = StandardKVCache(
-                num_pages, page_size,
-                self.config.n_local_heads,
-                self.config.head_dim,
-                dtype
-            )
-            
-            # Register MTP-specific attention kernels
-            attn.attn_prefill = torch.ops.mylib.attn_prefill
-            attn.attn_draft = torch.ops.mylib.attn_draft
-            attn.attn_draft_and_verify = torch.ops.mylib.attn_draft_and_verify
-            
-            # Assign RoPE function directly
+
             attn.rope = rope_func
+            attn.attn_kernel = attn_kernel
+            attn.kv_cache = StandardKVCache(
+                max_num_pages=num_pages,
+                page_size=page_size,
+                n_heads=self.config.n_local_heads,
+                head_dim=self.config.head_dim,
+                dtype=dtype,
+            )
     
     def get_tok_embeddings(self) -> nn.Embedding:
         """Get token embedding layer.
@@ -135,40 +129,34 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
     
     def forward(
         self,
-        idx: Tensor,
-        gate_mask: Optional[Tensor],
+        input_ids: Tensor,
+        gate_mask: Tensor,
         position_ids: Tensor,
-        kv_append_indptr: Tensor,
-        kv_page_indices: Tensor,
-        kv_page_indptr: Tensor,
-        kv_page_lastlen: Tensor,
-        attn_type: str = "prefill"
+        qo_indptr: Tensor,
+        kv_page_table: "PageTable",
     ) -> tuple[Tensor, Tensor]:
         """Forward pass through the MTP transformer.
         
         Args:
-            idx: Input token indices of shape (batch_size, seq_len)
-            gate_mask: Optional mask for LoRA gating
+            input_ids: Input token indices of shape (batch_size, seq_len)
+            gate_mask: Gate mask for LoRA of shape (, seq_len)
             position_ids: Position IDs for RoPE
-            kv_append_indptr: Indices for KV cache appending
-            kv_page_indices: Page indices for KV cache
-            kv_page_indptr: Page indirection pointers
-            kv_page_lastlen: Last length of each page
-            attn_type: Type of attention ("prefill", "draft", or "draft_and_verify")
+            qo_indptr: Index pointer for Query/Output tokens
+            kv_page_table: Page table for KV cache
             
         Returns:
             Tuple of (logits, hidden_states)
         """
         # Embed tokens
-        x = self.tok_embeddings(idx)
+        x = self.tok_embeddings(input_ids)
         
         # Forward pass through transformer layers with gated LoRA
         for layer in self.layers:
-            x = layer(
-                x, gate_mask, position_ids,
-                kv_append_indptr, kv_page_indices,
-                kv_page_indptr, kv_page_lastlen,
-                attn_type=attn_type
+            x = layer(x,
+                gate_mask=gate_mask,
+                position_ids=position_ids,
+                qo_indptr=qo_indptr,
+                kv_page_table=kv_page_table,
             )
         
         # Final normalization
@@ -178,18 +166,18 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
         logits = self._forward_lm_head(x, gate_mask)
         return logits, x
     
-    def sampler_forward(self, idx: Tensor, hidden_states: Tensor) -> Tensor:
+    def sampler_forward(self, input_ids: Tensor, hidden_states: Tensor) -> Tensor:
         """Forward pass through sampler head for multi-token prediction.
         
         Args:
-            idx: Previous token indices
+            input_ids: Input token indices
             hidden_states: Current hidden states
             
         Returns:
             Predicted next token indices
         """
         # Get embeddings of previous tokens
-        prev_embeds = self.tok_embeddings(idx)
+        prev_embeds = self.tok_embeddings(input_ids)
         
         # Concatenate with current hidden states
         sampler_inputs = torch.cat([prev_embeds, hidden_states], dim=-1)

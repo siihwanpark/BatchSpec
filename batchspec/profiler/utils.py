@@ -115,7 +115,7 @@ def generate_run_name(args: Any) -> str:
     """Generate a descriptive run name from arguments."""
     model_name = args.model_name.split("/")[-1]
     run_name = f"{model_name}/{args.dataset}/{args.backend}/"
-    run_name += f"bsz{args.batch_size}-prefix{args.prefix_len}-gen{args.max_gen_len}-tp{len(args.rank_group)}"
+    run_name += f"bsz{args.batch_size}-gen{args.max_gen_len}-tp{len(args.rank_group)}"
     if args.backend == "mtp":
         run_name += f"-r{args.lora_rank}-k{args.draft_length}"
     

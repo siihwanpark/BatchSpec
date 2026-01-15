@@ -45,17 +45,19 @@ class StandardAttention(BaseAttention):
         Returns:
             Output tensor of shape (batch_size, seq_len, dim)
         """
-        nnz, _ = x.shape
+        bsz, seqlen, _ = x.shape
         
         # Split QKV
         q, k, v = self._split_qkv(self.wqkv(x))
         
         # Apply Q/K normalization
-        q = self.q_norm(q.view(nnz, self.n_head, self.head_dim))
-        k = self.k_norm(k.view(nnz, self.n_local_heads, self.head_dim))
+        q = self.q_norm(q.view(bsz, seqlen, self.n_head, self.head_dim))
+        k = self.k_norm(k.view(bsz, seqlen, self.n_local_heads, self.head_dim))
 
         # Reshape for attention computation (flatten the heads)
-        v = v.contiguous().view(nnz, self.n_local_heads, self.head_dim)
+        q = q.view(bsz * seqlen, self.n_head, self.head_dim)
+        k = k.view(bsz * seqlen, self.n_local_heads, self.head_dim)
+        v = v.contiguous().view(bsz * seqlen, self.n_local_heads, self.head_dim)
         
         # Apply RoPE
         with rope_compute_timer():
@@ -69,6 +71,6 @@ class StandardAttention(BaseAttention):
             y = self.attn_kernel.run(q, kv_cache)
         
         # Reshape and project output (unflatten the heads)
-        y = y.contiguous().view(nnz, self.dim)
+        y = y.contiguous().view(bsz, seqlen, self.dim)
         y = self.wo(y)
         return self._maybe_all_reduce_output(y)

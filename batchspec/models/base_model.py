@@ -79,7 +79,7 @@ class GatedLoRATransformerBlock(BaseTransformerBlock):
     def forward(
         self, 
         x: Tensor,
-        gate_mask: Optional[Tensor] = None,
+        gate_mask: Tensor,
         *args, 
         **kwargs
     ) -> Tensor:

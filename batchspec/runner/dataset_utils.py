@@ -6,6 +6,7 @@ from pathlib import Path
 from datasets import Dataset, concatenate_datasets, load_from_disk
 
 
+# TODO : Modify the dataset paths to the local paths and support huggingface dataset
 DEFAULT_DATASET_PATH_DICT = {
     "GSM8K": "/home/mngcuser1/sihwan_workspace/datasets/gsm8k/test",
     "MATH-500": "/home/mngcuser1/sihwan_workspace/datasets/MATH-500/test",
@@ -27,7 +28,10 @@ PROMPT_KEY_DICT = {
     "GPQA-Diamond": "Question",
 }
 
-DEFAULT_BENCHMARK_DATASET_PATH = "/home/mngcuser1/sihwan_workspace/BatchSpec/tools/data/responses"
+BENCHMARK_DATASET_PATH_DICT = {
+    "Qwen3-8B": "/workspace/BatchSpec/batchspec/benchmark_data/responses_Qwen3-8B/",
+    "DeepSeek-R1-Distill-Llama-8B": "/workspace/BatchSpec/batchspec/benchmark_data/responses_DSL-8B/"
+}
 
 
 def load_dataset(tokenizer, dataset_name, num_samples=None, num_questions_in_prompt=1):
@@ -99,7 +103,7 @@ def load_dataset(tokenizer, dataset_name, num_samples=None, num_questions_in_pro
     return ds
 
 
-def load_benchmark_dataset(tokenizer, dataset_name):
+def load_benchmark_dataset(model_name, dataset_name):
     """
     Load a benchmark dataset from the responses directory.
     
@@ -110,7 +114,8 @@ def load_benchmark_dataset(tokenizer, dataset_name):
     Returns:
         Dataset with input/output fields
     """
-    filepath = Path(f"{DEFAULT_BENCHMARK_DATASET_PATH}/{dataset_name}_1000_responses.json")
+    root = BENCHMARK_DATASET_PATH_DICT[model_name]
+    filepath = Path(f"{root}/{dataset_name}_1000_responses.json")
     with Path(filepath).open("r", encoding="utf-8") as f:
         data = json.load(f)
     return Dataset.from_list(data.get("results", []))

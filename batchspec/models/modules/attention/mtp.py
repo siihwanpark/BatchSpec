@@ -24,21 +24,16 @@ class MTPAttention(GatedLoRAAttention):
     def __init__(self, config: ModelArgs, lora_config: LoRAConfig):
         super().__init__(config, lora_config)
         
-        # MTP-specific attention kernels
-        self.attn_prefill = None
-        self.attn_draft = None
-        self.attn_draft_and_verify = None
+        # Attention kernel to be set during setup
+        self.attn_kernel = None
     
     def forward(
         self,
         x: Tensor,
-        gate_mask: Optional[Tensor],
+        gate_mask: Tensor,
         position_ids: Tensor,
-        kv_append_indptr: Tensor,
-        kv_page_indices: Tensor,
-        kv_page_indptr: Tensor,
-        kv_page_lastlen: Tensor,
-        attn_type: str = "prefill"
+        qo_indptr: Tensor,
+        kv_page_table: "PageTable",
     ) -> Tensor:
         """Forward pass through MTP attention layer with LoRA gating.
         
@@ -46,22 +41,16 @@ class MTPAttention(GatedLoRAAttention):
             x: Input tensor of shape (batch_size, seq_len, dim)
             gate_mask: Optional mask for LoRA gating
             position_ids: Position IDs for RoPE
-            kv_append_indptr: Indices for KV cache appending
-            kv_page_indices: Page indices for KV cache
-            kv_page_indptr: Page indirection pointers
-            kv_page_lastlen: Last length of each page
-            attn_type: Type of attention ("prefill", "draft", or "draft_and_verify")
+            qo_indptr: Index pointer for Query/Output tokens
+            kv_page_table: Page table for KV cache
             
         Returns:
             Output tensor of shape (batch_size, seq_len, dim)
         """
         bsz, seqlen, _ = x.shape
         
-        # Apply QKV projection with LoRA gating
-        qkv = self.wqkv(x, gate_mask)
-        
         # Split QKV
-        q, k, v = self._split_qkv(qkv)
+        q, k, v = self._split_qkv(self.wqkv(x, gate_mask))
         
         # Apply normalization
         q = self.q_norm(q.view(bsz, seqlen, self.n_head, self.head_dim))
@@ -77,20 +66,11 @@ class MTPAttention(GatedLoRAAttention):
             q, k = self._apply_rope(q, k, position_ids)
         
         # Update KV cache
-        kv_cache = self.kv_cache.update(
-            k, v, kv_append_indptr,
-            kv_page_indices, kv_page_indptr, kv_page_lastlen
-        )
+        kv_cache = self.kv_cache.update(k, v, qo_indptr, kv_page_table)
         
-        # Compute attention based on type
-        attn_kernels = {
-            "prefill": self.attn_prefill,
-            "draft": self.attn_draft,
-            "draft_and_verify": self.attn_draft_and_verify,
-        }
-
+        # Compute attention
         with attention_compute_timer():
-            y = self._compute_attention(q, kv_cache, attn_type, attn_kernels)
+            y = self.attn_kernel.run(q, kv_cache)
         
         # Reshape and project output with gated LoRA
         y = y.contiguous().view(bsz, seqlen, self.dim)

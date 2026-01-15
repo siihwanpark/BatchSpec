@@ -4,6 +4,7 @@ import json
 import math
 import os
 from dataclasses import asdict
+from collections import defaultdict
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -29,7 +30,7 @@ class Profiler:
     - Per-step latency and accepted-token throughput (tok/s).
     - Optional model/LoRA/engine/comms breakdown.
     - Rank0 aggregation by default; TP-aware.
-    - Global aggregation across multiple _run_mtp_loop calls.
+    - Global aggregation across multiple calls.
     - Clean JSON/CSV/Markdown outputs.
     """
 
@@ -66,6 +67,7 @@ class Profiler:
         # Run-level warmup gating
         self._run_idx: int = 0
         self._run_ge_warmup: bool = False
+        self._run_idx_by_prefix: Dict[str, int] = {}
 
         # Global Aggregation (across all runs)
         self._g_lat_ms: List[float] = []
@@ -163,7 +165,7 @@ class Profiler:
     # Run lifecycle
     # ========================================================================
 
-    def begin_run(self, *, bsz: int, label: str = "decode") -> None:
+    def begin_run(self, *, bsz: int, label: str = "decode", prefix_len: int) -> None:
         """Begin a profiling run."""
         if self.disabled:
             return
@@ -171,11 +173,13 @@ class Profiler:
         self._current_meta = {
             "label": label,
             "bsz": int(bsz),
+            "prefix_len": (int(prefix_len) if prefix_len is not None else None),
             "rank": self.rank,
             "world": self.world,
             "started_at": now_s(),
             "cfg": asdict(self.cfg),
         }
+
         self._iters_elapsed_ms.clear()
         self._iter_tokens.clear()
         self._iter_events.clear()
@@ -184,7 +188,12 @@ class Profiler:
         self._iter_idx = 0
         self._iter_kv_lens.clear()
         self._run_idx += 1
-        self._run_ge_warmup = (self._run_idx > int(self.cfg.warmup_runs))
+    
+        key = str(int(prefix_len)) if prefix_len is not None else "None"
+        self._run_idx_by_prefix[key] = self._run_idx_by_prefix.get(key, 0) + 1
+        group_idx = self._run_idx_by_prefix[key]
+
+        self._run_ge_warmup = (group_idx > int(self.cfg.warmup_runs))
         
 
     def step_timing_ctx(self):
@@ -286,8 +295,10 @@ class Profiler:
             self._iter_events.clear()
             self._iters_model_sums.clear()
             self._iters_engine_sums.clear()
-            if self.cfg.print_per_run and self.rank == 0:
-                print(f"[Profiler] warmup run #{self._run_idx} skipped from aggregation.")
+            if self.cfg.print_per_run and self.rank == 0 and not self._run_ge_warmup:
+                pl = self._current_meta.get("prefix_len", None)
+                key = str(pl) if pl is not None else "None"
+                print(f"[Profiler] warmup skipped (prefix_len={pl}) group_run={self._run_idx_by_prefix[key]}/{self.cfg.warmup_runs}")
             return
 
         # Per-run stats
@@ -306,6 +317,7 @@ class Profiler:
                 "max_ms": vals[-1],
                 "p50_ms": percentile(vals, 50),
                 "p90_ms": percentile(vals, 90),
+                "p95_ms": percentile(vals, 95),
                 "p99_ms": percentile(vals, 99),
                 "throughput_tok_s": tp,
                 "tokens_total": tok_total,
@@ -355,6 +367,7 @@ class Profiler:
                     "mean_ms": m,
                     "p50_ms": percentile(ls_sorted, 50),
                     "p90_ms": percentile(ls_sorted, 90),
+                    "p95_ms": percentile(ls_sorted, 95),
                     "p99_ms": percentile(ls_sorted, 99),
                     "time_total_ms": tms,
                     "tokens_total": tok,
@@ -406,6 +419,13 @@ class Profiler:
     # ========================================================================
     # Save outputs
     # ========================================================================
+
+    def _group_runs_by_prefix(self):
+        groups = defaultdict(list)
+        for r in self._runs:
+            pl = r.get("meta", {}).get("prefix_len", None)
+            groups[pl].append(r)
+        return groups
 
     def save_all(self) -> None:
         """Save all profiling results to JSON and Markdown."""
@@ -477,6 +497,7 @@ class Profiler:
                     "mean_ms": mean_ms,
                     "p50_ms": percentile(ls_sorted, 50),
                     "p90_ms": percentile(ls_sorted, 90),
+                    "p95_ms": percentile(ls_sorted, 95),
                     "p99_ms": percentile(ls_sorted, 99),
                     "time_total_ms": tms,
                     "tokens_total": tok,
@@ -500,6 +521,7 @@ class Profiler:
                 "mean_ms": g_mean,
                 "p50_ms": percentile(g_vals, 50),
                 "p90_ms": percentile(g_vals, 90),
+                "p95_ms": percentile(g_vals, 95),
                 "p99_ms": percentile(g_vals, 99),
                 "throughput_tok_s": g_tp,
             },
@@ -520,6 +542,48 @@ class Profiler:
                 "stats": _mk_global_len_stats(),
             }
         }
+
+        groups = self._group_runs_by_prefix()
+        prefix_groups_summary = {}
+        for prefix_len, runs in groups.items():
+            run_lat_means = [rr["stats"].get("mean_ms") for rr in runs if "mean_ms" in rr["stats"]]
+            run_tp_means  = [rr["stats"].get("throughput_tok_s") for rr in runs if "throughput_tok_s" in rr["stats"]]
+
+            lat_mean, lat_std, lat_n = mean_std(run_lat_means)
+            tp_mean, tp_std, tp_n = mean_std(run_tp_means)
+
+            run_p95s = [rr["stats"].get("p95_ms") for rr in runs if "p95_ms" in rr["stats"]]
+            p95_mean, p95_std, p95_n = mean_std(run_p95s)
+
+            all_step_lat = []
+            total_tokens = 0
+            total_time_ms = 0.0
+            total_steps = 0
+            for rr in runs:
+                s = rr.get("stats", {})
+                total_tokens += int(s.get("tokens_total", 0) or 0)
+                total_time_ms += float(s.get("time_total_ms", 0.0) or 0.0)
+                total_steps += int(s.get("count", 0) or 0)
+
+            throughput_tok_s = (total_tokens / (total_time_ms / 1000.0)) if total_time_ms > 0 else float("nan")
+
+            prefix_groups_summary[str(prefix_len)] = {
+                "prefix_len": prefix_len,
+                "n_runs": len(runs),
+                "runs": runs,
+                "over_runs_unweighted": {
+                    "latency_mean_ms": {"mean": lat_mean, "std": lat_std, "n_runs": lat_n},
+                    "p95_ms": {"mean": p95_mean, "std": p95_std, "n_runs": p95_n},
+                    "throughput_tok_s": {"mean": tp_mean, "std": tp_std, "n_runs": tp_n},
+                },
+                "over_runs_weighted": {
+                    "steps_total": total_steps,
+                    "tokens_total": total_tokens,
+                    "time_total_ms": total_time_ms,
+                    "throughput_tok_s": throughput_tok_s,
+                }
+            }
+        global_summary["prefix_len_groups"] = prefix_groups_summary
 
         # Write JSON
         jpath = os.path.join(self.out_dir, "summary.json")
@@ -637,102 +701,137 @@ class Profiler:
                 f"{fmt(s['time_total_ms']/1000.0)} |\n\n"
             )
 
-            # Model buckets
-            g_buckets_model_avg = global_summary["buckets_model_avg_ms"]
-            if g_buckets_model_avg:
-                f.write("## Model Bucket Breakdown (avg (ms) / step)\n\n")
-                f.write("| bucket | avg (ms) | share |\n|--:|--:|--:|\n")
-                for k in MODEL_BUCKET_ORDER + (["others"] if "others" in g_buckets_model_avg else []):
-                    if k in g_buckets_model_avg:
-                        v = g_buckets_model_avg[k]
-                        pct = (v / float(s["mean_ms"] or 1e-9)) * 100.0 if s["mean_ms"] else 0.0
-                        f.write(f"| `{k}` | {float(v):.3f} | {pct:.1f}% |\n")
-                f.write("\n")
+            # # Model buckets
+            # g_buckets_model_avg = global_summary["buckets_model_avg_ms"]
+            # if g_buckets_model_avg:
+            #     f.write("## Model Bucket Breakdown (avg (ms) / step)\n\n")
+            #     f.write("| bucket | avg (ms) | share |\n|--:|--:|--:|\n")
+            #     for k in MODEL_BUCKET_ORDER + (["others"] if "others" in g_buckets_model_avg else []):
+            #         if k in g_buckets_model_avg:
+            #             v = g_buckets_model_avg[k]
+            #             pct = (v / float(s["mean_ms"] or 1e-9)) * 100.0 if s["mean_ms"] else 0.0
+            #             f.write(f"| `{k}` | {float(v):.3f} | {pct:.1f}% |\n")
+            #     f.write("\n")
 
-            # Engine buckets
-            g_buckets_engine_avg = global_summary["buckets_engine_avg_ms"]
-            if g_buckets_engine_avg:
-                f.write("## Engine Bucket Breakdown (avg (ms) / step)\n\n")
-                f.write("| bucket | avg (ms) | share |\n|--:|--:|--:|\n")
-                for k in ENGINE_BUCKET_ORDER + (["others"] if "others" in g_buckets_engine_avg else []):
-                    if k in g_buckets_engine_avg:
-                        v = g_buckets_engine_avg[k]
-                        pct = (v / float(s["mean_ms"] or 1e-9)) * 100.0 if s["mean_ms"] else 0.0
-                        f.write(f"| `{k}` | {float(v):.3f} | {pct:.1f}% |\n")
-                f.write("\n")
+            # # Engine buckets
+            # g_buckets_engine_avg = global_summary["buckets_engine_avg_ms"]
+            # if g_buckets_engine_avg:
+            #     f.write("## Engine Bucket Breakdown (avg (ms) / step)\n\n")
+            #     f.write("| bucket | avg (ms) | share |\n|--:|--:|--:|\n")
+            #     for k in ENGINE_BUCKET_ORDER + (["others"] if "others" in g_buckets_engine_avg else []):
+            #         if k in g_buckets_engine_avg:
+            #             v = g_buckets_engine_avg[k]
+            #             pct = (v / float(s["mean_ms"] or 1e-9)) * 100.0 if s["mean_ms"] else 0.0
+            #             f.write(f"| `{k}` | {float(v):.3f} | {pct:.1f}% |\n")
+            #     f.write("\n")
 
-            # Per-run quick view
-            if self._runs:
-                f.write("## Runs\n\n")
-                f.write("| run | bsz | num decoding steps | total generated tokens | mean (ms) | tok/s | mean generated tokens |\n")
-                f.write("|--:|--:|--:|--:|--:|--:|--:|\n")
-                for i, r in enumerate(self._runs):
-                    rm, rs = r["meta"], r["stats"]
-                    f.write(
-                        f"| {i} | {rm.get('bsz','?')} | {rs.get('count',0)} | "
-                        f"{int(rs.get('tokens_total', 0))} | {fmt(rs.get('mean_ms'))} | "
-                        f"{fmt(rs.get('throughput_tok_s'))} | "
-                        f"{fmt(rs.get('tokens_total', 0) / (rs.get('count', 1) * bsz))} |\n"
-                    )
-                f.write("\n")
+            # # Per-run quick view
+            # if self._runs:
+            #     f.write("## Runs\n\n")
+            #     f.write("| run | bsz | num decoding steps | total generated tokens | mean (ms) | tok/s | mean generated tokens |\n")
+            #     f.write("|--:|--:|--:|--:|--:|--:|--:|\n")
+            #     for i, r in enumerate(self._runs):
+            #         rm, rs = r["meta"], r["stats"]
+            #         f.write(
+            #             f"| {i} | {rm.get('bsz','?')} | {rs.get('count',0)} | "
+            #             f"{int(rs.get('tokens_total', 0))} | {fmt(rs.get('mean_ms'))} | "
+            #             f"{fmt(rs.get('throughput_tok_s'))} | "
+            #             f"{fmt(rs.get('tokens_total', 0) / (rs.get('count', 1) * bsz))} |\n"
+            #         )
+            #     f.write("\n")
 
-            # Runs aggregate section
-            ra = global_summary.get("runs_aggregate", {})
-            if ra:
-                f.write("## Across-run (unweighted) — mean ± std\n\n")
-                lat = ra.get("latency_ms", {})
-                tp = ra.get("throughput_tok_s", {})
-                f.write("| metric | mean | std | n_runs |\n|--|--:|--:|--:|\n")
-                f.write(
-                    f"| latency (ms/num decoding step) | {fmt(lat.get('mean'))} | "
-                    f"{fmt(lat.get('std'))} | {lat.get('n_runs', 0)} |\n"
-                )
-                f.write(
-                    f"| throughput (tok/s) | {fmt(tp.get('mean'))} | "
-                    f"{fmt(tp.get('std'))} | {tp.get('n_runs', 0)} |\n\n"
-                )
+            # # Runs aggregate section
+            # ra = global_summary.get("runs_aggregate", {})
+            # if ra:
+            #     f.write("## Across-run (unweighted) — mean ± std\n\n")
+            #     lat = ra.get("latency_ms", {})
+            #     tp = ra.get("throughput_tok_s", {})
+            #     f.write("| metric | mean | std | n_runs |\n|--|--:|--:|--:|\n")
+            #     f.write(
+            #         f"| latency (ms/num decoding step) | {fmt(lat.get('mean'))} | "
+            #         f"{fmt(lat.get('std'))} | {lat.get('n_runs', 0)} |\n"
+            #     )
+            #     f.write(
+            #         f"| throughput (tok/s) | {fmt(tp.get('mean'))} | "
+            #         f"{fmt(tp.get('std'))} | {tp.get('n_runs', 0)} |\n\n"
+            #     )
 
-                bstats_m = ra.get("buckets_model_avg_ms", {})
-                if bstats_m:
-                    f.write("### Model buckets — mean ± std across runs\n\n")
-                    f.write("| bucket | mean (ms) | std (ms) | n_runs |\n|--:|--:|--:|--:|\n")
-                    for k in MODEL_BUCKET_ORDER + sorted([x for x in bstats_m.keys() if x not in MODEL_BUCKET_ORDER and x != "others"]):
-                        if k in bstats_m:
-                            d = bstats_m[k]
-                            f.write(f"| `{k}` | {fmt(d.get('mean'))} | {fmt(d.get('std'))} | {d.get('n_runs', 0)} |\n")
-                    if "others" in bstats_m:
-                        d = bstats_m["others"]
-                        f.write(f"| `others` | {fmt(d.get('mean'))} | {fmt(d.get('std'))} | {d.get('n_runs', 0)} |\n")
+            #     bstats_m = ra.get("buckets_model_avg_ms", {})
+            #     if bstats_m:
+            #         f.write("### Model buckets — mean ± std across runs\n\n")
+            #         f.write("| bucket | mean (ms) | std (ms) | n_runs |\n|--:|--:|--:|--:|\n")
+            #         for k in MODEL_BUCKET_ORDER + sorted([x for x in bstats_m.keys() if x not in MODEL_BUCKET_ORDER and x != "others"]):
+            #             if k in bstats_m:
+            #                 d = bstats_m[k]
+            #                 f.write(f"| `{k}` | {fmt(d.get('mean'))} | {fmt(d.get('std'))} | {d.get('n_runs', 0)} |\n")
+            #         if "others" in bstats_m:
+            #             d = bstats_m["others"]
+            #             f.write(f"| `others` | {fmt(d.get('mean'))} | {fmt(d.get('std'))} | {d.get('n_runs', 0)} |\n")
+            #         f.write("\n")
+
+            #     bstats_b = ra.get("buckets_engine_avg_ms", {})
+            #     if bstats_b:
+            #         f.write("### Engine buckets — mean ± std across runs\n\n")
+            #         f.write("| bucket | mean (ms) | std (ms) | n_runs |\n|--:|--:|--:|--:|\n")
+            #         for k in ENGINE_BUCKET_ORDER + sorted([x for x in bstats_b.keys() if x not in ENGINE_BUCKET_ORDER and x != "others"]):
+            #             if k in bstats_b:
+            #                 d = bstats_b[k]
+            #                 f.write(f"| `{k}` | {fmt(d.get('mean'))} | {fmt(d.get('std'))} | {d.get('n_runs', 0)} |\n")
+            #         if "others" in bstats_b:
+            #             d = bstats_b["others"]
+            #             f.write(f"| `others` | {fmt(d.get('mean'))} | {fmt(d.get('std'))} | {d.get('n_runs', 0)} |\n")
+            #         f.write("\n")
+
+            # # Decode-length buckets (global)
+            # if "decode_length_buckets" in global_summary:
+            #     f.write("## Decode-length Buckets (KV length at step start)\n\n")
+            #     f.write("| bin | range | steps | mean (ms) | p50 (ms) | p90 (ms) | p99 (ms) | tok/s | tokens | mean generated tokens | time (s) |\n")
+            #     f.write("|--:|--|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n")
+            #     gdb = global_summary["decode_length_buckets"]["stats"]
+            #     for lo, hi, key in self._g_len_bins_meta:
+            #         s = gdb.get(key, {})
+            #         rng = f"[{lo},{hi})" if hi is not None else f"[{lo},∞)"
+            #         f.write(
+            #             f"| {key} | {rng} | {int(s.get('steps',0))} | {fmt(s.get('mean_ms'))} | "
+            #             f"{fmt(s.get('p50_ms'))} | {fmt(s.get('p90_ms'))} | {fmt(s.get('p99_ms'))} | "
+            #             f"{fmt(s.get('throughput_tok_s'))} | {int(s.get('tokens_total',0))} | "
+            #             f"{fmt(s.get('tokens_total',0) / (1 if s.get('steps', 0) == 0 else s.get('steps',0) * bsz))} | "
+            #             f"{fmt((s.get('time_total_ms',0.0))/1000.0)} |\n"
+            #         )
+            #     f.write("\n")
+
+            pg = global_summary.get("prefix_len_groups", {})
+            if pg:
+                f.write("## Prefix-length Groups\n\n")
+                def _key(k):
+                    try:
+                        return -1 if k == "None" else int(k)
+                    except:
+                        return 10**18
+                for pl_key in sorted(pg.keys(), key=_key):
+                    g = pg[pl_key]
+                    f.write(f"### prefix_len = {pl_key}\n\n")
+
+                    # Over-runs mean±std
+                    oor = g.get("over_runs_unweighted", {})
+                    orw = g.get("over_runs_weighted", {})
+                    lat = oor.get("latency_mean_ms", {})
+                    p95 = oor.get("p95_ms", {})
+                    tp = oor.get("throughput_tok_s", {})
+                    f.write("| metric | mean | std | n_runs |\n|--|--:|--:|--:|\n")
+                    f.write(f"| latency mean (ms/step) | {fmt(lat.get('mean'))} | {fmt(lat.get('std'))} | {lat.get('n_runs',0)} |\n")
+                    f.write(f"| latency p95 (ms/step) | {fmt(p95.get('mean'))} | {fmt(p95.get('std'))} | {p95.get('n_runs',0)} |\n")
+                    f.write(f"| throughput (tok/s) | {fmt(tp.get('mean'))} | {fmt(tp.get('std'))} | {tp.get('n_runs',0)} |\n")
+                    f.write(f"| mean generated tokens | {fmt(int(orw.get('tokens_total', 0)) / (int(orw.get('steps_total', 0)) * bsz))} |\n\n")
+
+                    # Runs table
+                    f.write("| run_idx | bsz | steps | tokens | mean (ms) | p95 (ms) | tok/s | mean generated tokens |\n")
+                    f.write("|--:|--:|--:|--:|--:|--:|--:|\n")
+                    for i, r in enumerate(g.get("runs", [])):
+                        rm, rs = r.get("meta", {}), r.get("stats", {})
+                        f.write(
+                            f"| {i} | {rm.get('bsz','?')} | {rs.get('count',0)} | "
+                            f"{int(rs.get('tokens_total',0) or 0)} | {fmt(rs.get('mean_ms'))} | "
+                            f"{fmt(rs.get('p95_ms'))} | {fmt(rs.get('throughput_tok_s'))} | {fmt(int(rs.get('tokens_total', 0)) / (int(rs.get('count', 1)) * int(rm.get('bsz', 1))))} |\n"
+                        )
                     f.write("\n")
-
-                bstats_b = ra.get("buckets_engine_avg_ms", {})
-                if bstats_b:
-                    f.write("### Engine buckets — mean ± std across runs\n\n")
-                    f.write("| bucket | mean (ms) | std (ms) | n_runs |\n|--:|--:|--:|--:|\n")
-                    for k in ENGINE_BUCKET_ORDER + sorted([x for x in bstats_b.keys() if x not in ENGINE_BUCKET_ORDER and x != "others"]):
-                        if k in bstats_b:
-                            d = bstats_b[k]
-                            f.write(f"| `{k}` | {fmt(d.get('mean'))} | {fmt(d.get('std'))} | {d.get('n_runs', 0)} |\n")
-                    if "others" in bstats_b:
-                        d = bstats_b["others"]
-                        f.write(f"| `others` | {fmt(d.get('mean'))} | {fmt(d.get('std'))} | {d.get('n_runs', 0)} |\n")
-                    f.write("\n")
-
-            # Decode-length buckets (global)
-            if "decode_length_buckets" in global_summary:
-                f.write("## Decode-length Buckets (KV length at step start)\n\n")
-                f.write("| bin | range | steps | mean (ms) | p50 (ms) | p90 (ms) | p99 (ms) | tok/s | tokens | mean generated tokens | time (s) |\n")
-                f.write("|--:|--|--:|--:|--:|--:|--:|--:|--:|--:|--:|\n")
-                gdb = global_summary["decode_length_buckets"]["stats"]
-                for lo, hi, key in self._g_len_bins_meta:
-                    s = gdb.get(key, {})
-                    rng = f"[{lo},{hi})" if hi is not None else f"[{lo},∞)"
-                    f.write(
-                        f"| {key} | {rng} | {int(s.get('steps',0))} | {fmt(s.get('mean_ms'))} | "
-                        f"{fmt(s.get('p50_ms'))} | {fmt(s.get('p90_ms'))} | {fmt(s.get('p99_ms'))} | "
-                        f"{fmt(s.get('throughput_tok_s'))} | {int(s.get('tokens_total',0))} | "
-                        f"{fmt(s.get('tokens_total',0) / (1 if s.get('steps', 0) == 0 else s.get('steps',0) * bsz))} | "
-                        f"{fmt((s.get('time_total_ms',0.0))/1000.0)} |\n"
-                    )
-                f.write("\n")
-

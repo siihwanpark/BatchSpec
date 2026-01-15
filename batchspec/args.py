@@ -81,24 +81,6 @@ class BenchmarkArguments:
 
 
 @dataclass
-class E2EArguments:
-    """Arguments specific to end-to-end runner."""
-    
-    prefix_len: int = field(
-        default=2048,
-        metadata={"help": "Length of the input prompt sequence."}
-    )
-    num_questions_in_prompt: int = field(
-        default=1,
-        metadata={"help": "Number of questions in the prompt."}
-    )
-    num_total_runs: int = field(
-        default=11,
-        metadata={"help": "Total number of runs for the benchmark."}
-    )
-
-
-@dataclass
 class SamplingArguments:
     """Sampling configuration for generation."""
     
@@ -256,8 +238,8 @@ def _postprocess_args(args: SimpleNamespace) -> SimpleNamespace:
     return args
 
 
-def parse_benchmark_args() -> SimpleNamespace:
-    """Parse arguments for run_benchmark.py"""
+def parse_args() -> SimpleNamespace:
+    """Parse arguments for run.py"""
     parser = HfArgumentParser((
         CommonArguments,
         BenchmarkArguments,
@@ -275,28 +257,3 @@ def parse_benchmark_args() -> SimpleNamespace:
     merged = _postprocess_args(merged)
     
     return merged
-
-
-def parse_e2e_args() -> SimpleNamespace:
-    """Parse arguments for run_e2e.py"""
-    parser = HfArgumentParser((
-        CommonArguments,
-        E2EArguments,
-        SamplingArguments,
-        MTPArguments,
-        LoRAArguments,
-        ProfilerArguments,
-        DistributedArguments,
-    ))
-    
-    parsed = parser.parse_args_into_dataclasses()
-    (common, e2e, sampling, mtp, lora, profiler, distributed) = parsed
-    
-    merged = _merge_to_namespace(common, e2e, sampling, mtp, lora, profiler, distributed)
-    merged = _postprocess_args(merged)
-    
-    # E2E specific: calculate max_len
-    merged.max_len = merged.prefix_len + merged.max_gen_len
-    
-    return merged
-

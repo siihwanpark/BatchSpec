@@ -6,24 +6,59 @@
 
 # Environment Setup
 export ENABLE_INTRA_NODE_COMM=1
-export TORCH_CUDA_ARCH_LIST=9.0
+export TORCH_CUDA_ARCH_LIST=8.6
 export FLASHINFER_JIT_VERBOSE=1
 
 # Model Configuration
-# model_name=Qwen/Qwen3-8B
-# model=/home/mngcuser1/sihwan_workspace/Qwen3-8B/model.pth
-# tokenizer_path=/home/mngcuser1/sihwan_workspace/Qwen3-8B
-# drafter=/home/mngcuser1/sihwan_workspace/checkpoints/MTP_adapters/Qwen3-8B/am-qwen3-distilled-120k-rank16-lr2e-4-bsz4-SoftSCE-fused/step-30000/model.pth
+model_name=Qwen3-8B
+model_path=/workspace/checkpoints/Qwen3-8B/model.pth
+tokenizer_path=/workspace/checkpoints/Qwen3-8B
+drafter=/workspace/checkpoints/MTP-adapter/Qwen3-8B/AM_Qwen3_Distilled_120k/rank16-lr2e-4-bsz8-SoftSCE-fused/step-35000/model.pth
 
-model_name=deepseek-ai/DeepSeek-R1-Distill-Llama-8B
-model_path=/home/mngcuser1/sihwan_workspace/checkpoints/DeepSeek-R1-Distill-Llama-8B/model.pth
-tokenizer_path=/home/mngcuser1/sihwan_workspace/checkpoints/DeepSeek-R1-Distill-Llama-8B
-drafter=/home/mngcuser1/sihwan_workspace/checkpoints/MTP_adapters/DeepSeek-R1-Distill-Llama-8B/openthoughts-114k-rank16-lr2e-4-bsz8/step-30000/model.pth
+# model_name=deepseek-ai/DeepSeek-R1-Distill-Llama-8B
+# model_path=/home/mngcuser1/sihwan_workspace/checkpoints/DeepSeek-R1-Distill-Llama-8B/model.pth
+# tokenizer_path=/home/mngcuser1/sihwan_workspace/checkpoints/DeepSeek-R1-Distill-Llama-8B
+# drafter=/home/mngcuser1/sihwan_workspace/checkpoints/MTP_adapters/DeepSeek-R1-Distill-Llama-8B/openthoughts-114k-rank16-lr2e-4-bsz8/step-30000/model.pth
 
-if [ ! -f $model_path ] || [ ! -f $drafter ]; then
+if [ ! -f "$model_path" ] || [ ! -f "$drafter" ]; then
     echo "Model or drafter file not found! Please prepare the model first."
     exit 1
 fi
+
+export CUDA_VISIBLE_DEVICES=0
+# torchrun --standalone --nproc_per_node=1 -m batchspec.run\
+#     --backend standard\
+#     --checkpoint_path $model_path\
+#     --tokenizer_path $tokenizer_path\
+#     --model_name $model_name\
+#     --rank_group 0\
+#     --dataset AIME2025\
+#     --dtype bfloat16\
+#     --batch_size 2 --prefix_len_list 1024 2048 --max_gen_len 128\
+#     --temperature 0.0\
+#     --printoutput\
+#     --profiling\
+#     --num_total_runs 3
+
+# exit 0
+
+torchrun --standalone --nproc_per_node=1 -m batchspec.run\
+    --backend mtp\
+    --checkpoint_path $model_path\
+    --tokenizer_path $tokenizer_path\
+    --model_name $model_name\
+    --rank_group 0\
+    --dataset AIME2025 --force_budget\
+    --dtype bfloat16\
+    --batch_size 2 --prefix_len_list 1024 2048 --max_gen_len 128\
+    --temperature 0.0\
+    --printoutput\
+    --profiling\
+    --num_total_runs 3\
+    --lora_checkpoint_path $drafter --lora_rank 16 --lora_alpha 32\
+    --draft_length 4
+
+exit 0
 
 OPTION=${1:-0}
 if [ $OPTION -eq 0 ]; then

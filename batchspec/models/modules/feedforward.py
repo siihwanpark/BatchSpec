@@ -86,7 +86,7 @@ class GatedLoRAFeedForward(FeedForward):
         self.w13 = GatedLoRALinear(config.dim, 2 * config.intermediate_size, bias=False, lora_config=w13_lora_config)
         self.w2 = GatedLoRALinear(config.intermediate_size, config.dim, bias=False, lora_config=lora_config)
     
-    def forward(self, x: Tensor, gate_mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, gate_mask: Tensor) -> Tensor:
         """Forward pass with gated LoRA.
         
         Args:
