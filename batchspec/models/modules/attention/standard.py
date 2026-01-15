@@ -1,6 +1,6 @@
 """Standard attention implementation."""
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -9,7 +9,9 @@ from torch import Tensor
 from .base import BaseAttention
 from ...configs import ModelArgs
 from batchspec.profiler import attention_compute_timer, rope_compute_timer
-from batchspec.backends.base.page_table import PageTable
+
+if TYPE_CHECKING:
+    from batchspec.backends.base.page_table import PageTable
 
 
 class StandardAttention(BaseAttention):
@@ -30,7 +32,7 @@ class StandardAttention(BaseAttention):
         x: Tensor,
         position_offsets: Tensor,
         qo_indptr: Tensor,
-        kv_page_table: PageTable,
+        kv_page_table: "PageTable",
     ) -> Tensor:
         """Forward pass through attention layer.
         

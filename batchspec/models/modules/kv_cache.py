@@ -1,6 +1,6 @@
 """Key-Value cache implementations for efficient attention computation."""
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -11,7 +11,8 @@ from flashinfer import (
     append_paged_kv_cache,
 )
 
-from batchspec.backends.base.page_table import PageTable
+if TYPE_CHECKING:
+    from batchspec.backends.base.page_table import PageTable
 
 
 class StandardKVCache(nn.Module):
@@ -48,7 +49,7 @@ class StandardKVCache(nn.Module):
         k: Tensor,
         v: Tensor,
         kv_append_indptr: Tensor,
-        kv_page_table: PageTable,
+        kv_page_table: "PageTable",
     ) -> Tensor:
         """Update cache with new key-value pairs.
         
@@ -118,7 +119,7 @@ class StreamingKVCache(StandardKVCache):
         k: Tensor,
         v: Tensor,
         query_lens: Tensor,
-        kv_page_table: PageTable,
+        kv_page_table: "PageTable",
         bsz: int,
         context_len: int,
         seq_len: int,

@@ -1,6 +1,6 @@
 """Standard transformer implementation."""
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import torch
 from torch import Tensor
@@ -8,7 +8,8 @@ from torch import Tensor
 from .configs import ModelArgs
 from .modules import RoPEMixin, StandardAttention, StandardKVCache
 from .base_model import BaseTransformerBlock, BaseTransformer
-from batchspec.backends.base.page_table import PageTable
+if TYPE_CHECKING:
+    from batchspec.backends.base.page_table import PageTable
 
 
 class StandardTransformer(BaseTransformer, RoPEMixin):
@@ -72,7 +73,7 @@ class StandardTransformer(BaseTransformer, RoPEMixin):
         input_ids: Tensor,
         position_offsets: Tensor,
         qo_indptr: Tensor,
-        kv_page_table: PageTable,
+        kv_page_table: "PageTable",
     ) -> Tensor:
         """Forward pass through the transformer.
         

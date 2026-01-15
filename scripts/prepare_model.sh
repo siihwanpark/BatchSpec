@@ -6,10 +6,10 @@ set -e  # Exit on any error
 # =============================================================================
 
 # Base checkpoint directory (all models will be saved under this directory)
-BASE_CHECKPOINT_DIR="/home/mngcuser1/sihwan_workspace/checkpoints"
+BASE_CHECKPOINT_DIR="/workspace/checkpoints"
 
 # HuggingFace token (replace with your token)
-HF_TOKEN="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"
+HF_TOKEN=""
 
 # =============================================================================
 # Model Repository IDs
@@ -24,7 +24,7 @@ REPO_IDS=(
     # "Qwen/Qwen3-0.6B"
     # "Qwen/Qwen3-1.7B"
     # "Qwen/Qwen3-8B"
-    "/home/mngcuser1/sihwan_workspace/checkpoints/Qwen3-8B"
+    "Qwen/Qwen3-8B"
 )
 
 # =============================================================================
@@ -83,7 +83,7 @@ for i in "${!REPO_IDS[@]}"; do
     log "Starting download and conversion..."
     
     # Build command with optional hf_token
-    CMD="python -m tools.convert_weights --type base --repo_id \"$repo_id\" --out_dir \"$output_dir\""
+    CMD="python -m tools.prepare_model.convert_weights --type base --repo_id \"$repo_id\" --out_dir \"$output_dir\""
     [ -n "$HF_TOKEN" ] && CMD="$CMD --hf_token \"$HF_TOKEN\""
     [ -n "$model_name" ] && CMD="$CMD --model_name \"$model_name\""
     

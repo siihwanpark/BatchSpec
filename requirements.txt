@@ -7,3 +7,4 @@ tiktoken
 packaging
 ninja
 einops
+hf_transfer
