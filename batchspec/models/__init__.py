@@ -39,7 +39,6 @@ from .configs import (
 from .modules import (
     BaseAttention,
     GatedLoRAAttention,
-    RoPEMixin,
     RMSNorm,
     FeedForward,
     GatedLoRAFeedForward,
@@ -82,7 +81,6 @@ __all__ = [
     "BaseTransformer",
     "BaseTransformerBlock",
     "GatedLoRATransformerBlock",
-    "RoPEMixin",
     
     # Attention
     "StandardAttention",
@@ -91,9 +89,9 @@ __all__ = [
     
     # Transformers
     "StandardTransformer",
+    "MTPTransformer",
     "EAGLETransformer",
     "EAGLEModel",
-    "MTPTransformer",
 ]
 
 from typing import Optional
@@ -102,7 +100,6 @@ def get_model(
     model_name: str, 
     model_type: str,
     drafter_name: Optional[str] = None,
-    use_chain_mode: bool = False,
     lora_config: Optional[LoRAConfig] = None
 ):
     """Factory function to create models by type name.
@@ -111,7 +108,6 @@ def get_model(
         model_name: Name of the model configuration
         model_type: Type of model ("standard", "eagle", "mtp")
         drafter_name: Name of the drafter configuration (for EAGLE model only)
-        use_chain_mode: Whether to use chain mode (for EAGLE model only)
         lora_config: LoRA configuration (for MTP model only)
     Returns:
         Model instance
@@ -121,7 +117,7 @@ def get_model(
         
     Example:
         >>> model = get_model("llama-3-8b", "standard")
-        >>> model = get_model("llama-3-8b", "eagle", drafter_name="eagle-3-8b", use_chain_mode=True)
+        >>> model = get_model("llama-3-8b", "eagle", drafter_name="eagle-3-8b")
         >>> model = get_model("llama-3-8b", "mtp", lora_config=LoRAConfig(rank=16, alpha=32))
     """    
     model_type = model_type.lower()
@@ -131,7 +127,7 @@ def get_model(
     elif model_type == "eagle":
         if drafter_name is None:
             raise ValueError("Drafter configuration is required for EAGLE model.")
-        return EAGLETransformer.from_name(model_name, drafter_name, use_chain_mode)
+        return EAGLETransformer.from_name(model_name, drafter_name)
 
     elif model_type == "mtp":
         if lora_config is None:

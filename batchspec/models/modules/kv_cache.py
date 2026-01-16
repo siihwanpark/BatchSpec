@@ -1,6 +1,6 @@
 """Key-Value cache implementations for efficient attention computation."""
 
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn

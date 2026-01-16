@@ -3,7 +3,7 @@
 This engine implements self-speculative decoding with LoRA and gated sampling.
 """
 
-from typing import Tuple, List, Optional
+from typing import Optional
 from pathlib import Path
 
 import torch
@@ -106,7 +106,8 @@ class MTPEngine(BaseEngine):
         batch_size: int = 1,
         max_seq_length: int = 2048,
         page_size: int = 16,
-        prefill_chunk_size: int = 128
+        prefill_chunk_size: int = 128,
+        attn_buffer_size_mb: int = 384,
     ):
         """Setup KV caches and attention wrappers.
         
@@ -115,6 +116,7 @@ class MTPEngine(BaseEngine):
             max_seq_length: Maximum sequence length
             page_size: Size of each page
             prefill_chunk_size: Chunk size for prefill
+            attn_buffer_size_mb: Size of attention buffer in MB
         """
         # Setup base caches
         self.max_seq_len = max_seq_length
@@ -128,26 +130,19 @@ class MTPEngine(BaseEngine):
         self.setup_common_attn_mask_and_position_ids()
 
         # Create causal attention wrapper
-        self.causal_attn_buffer = self._create_attention_buffer(384)
-        self.causal_attn_wrapper = self._create_attention_wrapper(
-            self.causal_attn_buffer,
-            qo_indptr=self.qo_indptr,
-        )
+        self.causal_attn_buffer = self._create_attention_buffer(attn_buffer_size_mb)
+        self.causal_attn_wrapper = self._create_attention_wrapper(batch_size, self.causal_attn_buffer)
 
         # Create non-causal attention wrapper
-        self.non_causal_qo_indptr = torch.arange(self.batch_size + 1, dtype=torch.int32, device=self.device)
-        self.non_causal_attn_buffer = self._create_attention_buffer(384)
+        self.non_causal_attn_buffer = self._create_attention_buffer(attn_buffer_size_mb)
         
-        max_bytes_for_attn_masks = (self.batch_size * (self.draft_and_verify_len * self.max_cache_len)) // 8 + 1
+        max_bytes_for_attn_masks = (batch_size * (self.draft_and_verify_len * self.max_cache_len)) // 8 + 1
         self.custom_mask_buf = torch.empty(max_bytes_for_attn_masks, dtype=torch.uint8, device=self.device)
-        self.mask_indptr_buf = torch.arange(self.batch_size + 1, dtype=torch.int32, device=self.device)
         
         self.non_causal_attn_wrapper = self._create_attention_wrapper(
-            self.non_causal_attn_buffer,
-            qo_indptr=self.non_causal_qo_indptr,
+            batch_size, self.non_causal_attn_buffer,
             use_custom_mask=True,
             custom_mask_buf=self.custom_mask_buf,
-            mask_indptr_buf=self.mask_indptr_buf,
         )
 
         # Setup model caches
@@ -194,32 +189,35 @@ class MTPEngine(BaseEngine):
 
     def forward(self,
         input_ids: Tensor,
-        qo_indptr: Tensor,
-        position_ids: Tensor,
         gate_mask: Optional[Tensor]=None,
+        position_ids: Optional[Tensor]=None,
         attn_mask: Optional[Tensor]=None,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Single step forward.
         
         Args:
             input_ids: Input token indices of shape [bsz, seq_len]
-            qo_indptr: Index pointer for Query/Output tokens of shape [bsz + 1]
-            position_ids: Position IDs for RoPE of shape [bsz * seq_len]
-            gate_mask: Optional mask for LoRA gating
-            attn_mask: Optional attention mask
+            gate_mask: Mask for LoRA gating of shape [bsz, seq_len], optional (If set to None, no LoRA path is activated)
+            position_ids: Position IDs for RoPE of shape [bsz * seq_len], optional (If set to None, position IDs are computed from cachelens)
+            attn_mask: Attention mask of shape [bsz * cahelen * seq_len], optional (If set to None, causal attention is used)
 
         Returns:
-            Tuple of (logits, hidden_states)
+            tuple of (logits, hidden_states)
             - logits: [bsz, seq_len, vocab_size]
             - hidden_states: [bsz, seq_len, hidden_size]
         """
+        bsz, seq_len = input_ids.shape
+        qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * seq_len
+        if position_ids is None:
+            position_ids = (self.kv_page_table.cachelens[:, None] + torch.arange(seq_len, device=self.device)[None, :]).flatten()
+        
         self.pre_forward(qo_indptr=qo_indptr, attn_mask=attn_mask)
         with torch.inference_mode():
             logits, hidden_states = self.model(
                 input_ids=input_ids,
                 gate_mask=gate_mask,
-                position_ids=position_ids,
                 qo_indptr=qo_indptr,
+                position_ids=position_ids,
                 kv_page_table=self.kv_page_table,
                 causal=attn_mask is None,
             ) # [bsz, seq_len, vocab_size], [bsz, seq_len, hidden_size]
@@ -236,28 +234,18 @@ class MTPEngine(BaseEngine):
         Returns:
             Next token predictions [bsz, 1]
         """        
-        bsz, seq_len = input_ids.shape
+        _, seq_len = input_ids.shape
         assert seq_len % self.prefill_chunk_size == 0, f"The sequence length must be divisible by the prefill chunk size, but got seq_len={seq_len} and prefill_chunk_size={self.prefill_chunk_size}"
         
         chunk_size = self.prefill_chunk_size
         num_chunks = seq_len // chunk_size
         for i in range(num_chunks):
             chunk_input_ids = input_ids[:, i*chunk_size:(i+1)*chunk_size]
-            chunk_seq_len = chunk_input_ids.shape[1]
-            
-            # Target prefill
-            qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * chunk_seq_len
-            position_ids = (self.kv_page_table.cachelens[:, None] + torch.arange(chunk_seq_len, device=self.device)[None, :]).flatten()
-            logits, _ = self.forward(
-                input_ids=chunk_input_ids,
-                qo_indptr=qo_indptr,
-                position_ids=position_ids,
-            ) # [bsz, chunk_seq_len, vocab_size]
-
+            logits, _ = self.forward(chunk_input_ids) # [bsz, chunk_seq_len, vocab_size]
         return sample(logits[:, -1, :], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
 
 
-    def draft(self, input_ids: Tensor, gate_mask: Tensor) -> Tuple[Tensor, Tensor]:
+    def draft(self, input_ids: Tensor, gate_mask: Tensor) -> tuple[Tensor, Tensor]:
         """First draft after prefill / Fallback draft
         
         Assume that a single token is generated in the previous step (x_0).
@@ -271,22 +259,13 @@ class MTPEngine(BaseEngine):
             gate_mask: Gate mask for LoRA
             
         Returns:
-            Tuple of (logits, hidden_states)
+            tuple of (logits, hidden_states)
         """
-        bsz, dec_len = input_ids.shape
+        _, dec_len = input_ids.shape
         assert dec_len == self.draft_length + 1, f"The input sequence length must be equal to the draft length + 1, but got dec_len={dec_len} and draft_length={self.draft_length}"
 
-        # prepare position_ids
-        qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * dec_len
-        position_ids = (self.kv_page_table.cachelens[:, None] + torch.arange(dec_len, device=self.device)[None, :]).flatten()
-
         # model forward for draft
-        logits, hidden_states = self.forward(
-            input_ids=input_ids,
-            gate_mask=gate_mask,
-            qo_indptr=qo_indptr,
-            position_ids=position_ids,
-        ) # [bsz, dec_len, vocab_size], [bsz, dec_len, hidden_size]
+        logits, hidden_states = self.forward(input_ids=input_ids, gate_mask=gate_mask,) # [bsz, dec_len, vocab_size], [bsz, dec_len, hidden_size]
         
         # delete the KV cache entries for the draft(mask) tokens
         self.kv_page_table.delete_kv(self.draft_length)
@@ -294,7 +273,7 @@ class MTPEngine(BaseEngine):
         return logits, hidden_states
     
     
-    def draft_and_verify(self, input_ids: Tensor, gate_mask: Tensor) -> Tuple[Tensor, Tensor]:
+    def draft_and_verify(self, input_ids: Tensor, gate_mask: Tensor) -> tuple[Tensor, Tensor]:
         """Regular routine for self-speculative decoding with MTP.
 
         Assume that k draft tokens are generated in the previous step (x_0, ..., x_k) where k is the draft length.
@@ -321,15 +300,12 @@ class MTPEngine(BaseEngine):
             gate_mask: Gate mask for LoRA
             
         Returns:
-            Tuple of (logits, hidden_states)
+            tuple of (logits, hidden_states)
         """
         bsz, dec_len = input_ids.shape
         assert dec_len == self.draft_and_verify_len, f"The input sequence length must be equal to the draft_and_verify length, but got dec_len={dec_len} and draft_and_verify_len={self.draft_and_verify_len}"
         
-        # prepare qo_indptr, position_ids, and attn_mask
-        qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * dec_len
-        position_ids = (self.kv_page_table.cachelens[:, None] + self.common_position_ids[None, :]).flatten()
-        
+        # prepare position_ids and attn_mask
         mask_arr = []
         for i in range(bsz):
             ones_mask = torch.ones((dec_len, self.kv_page_table.cachelens[i]), device=self.device)
@@ -337,12 +313,12 @@ class MTPEngine(BaseEngine):
             mask_arr.append(mask_i.flatten())
         attn_mask = torch.cat(mask_arr, dim=0)
         attn_mask = attn_mask.contiguous().to(device=self.device, dtype=torch.bool)
+        position_ids = (self.kv_page_table.cachelens[:, None] + self.common_position_ids[None, :]).flatten()
 
         # model forward for draft_and_verify
         logits, hidden_states = self.forward(
             input_ids=input_ids,
             gate_mask=gate_mask,
-            qo_indptr=qo_indptr,
             position_ids=position_ids,
             attn_mask=attn_mask,
         ) # [bsz, dec_len, vocab_size], [bsz, dec_len, hidden_size]
@@ -426,7 +402,7 @@ class MTPEngine(BaseEngine):
 
         terminal = False
         first_draft = True
-        while num_generated_tokens.sum() < bsz * max_gen_len and not terminal:
+        while num_generated_tokens.mean(dtype=torch.float32) < max_gen_len and not terminal:
             with profiler.step_timing_ctx():
                 profiler.set_step_seq_len(self.kv_page_table.cachelens)
 
@@ -474,9 +450,13 @@ class MTPEngine(BaseEngine):
                     hidden_states = hidden_states.reshape(bsz, k+1, k+1, -1) # [bsz, k+1, k+1, hidden_size]
                     selected_hidden_states = hidden_states[batch_indices, accept_nums-1, 1:, :] # [bsz, k, hidden_size]
                     tokens_buffer[:, 1:] = self.sampler_draft(tokens_buffer[:, :1], selected_hidden_states) # [bsz, k], [bsz, k, vocab_size]
-                    if (not force_budget) and (eos_accepted).any(): terminal = True
-                    model_steps += 1
                     
+                    model_steps += 1
+
+                    # Terminate when EOS tokens are accepted
+                    if (not force_budget) and (eos_accepted).any(): terminal = True
+                    
+            # Terminate when EOS tokens are generated as a bonus token
             if (not force_budget) and (tokens_buffer[:, 0] == eos_token_id).any(): terminal = True
         
         profiler.end_run()
@@ -485,18 +465,6 @@ class MTPEngine(BaseEngine):
         return output, num_generated_tokens, model_steps
 
     # =============================== Helper functions ===============================
-    def get_causal_mask(self, bsz: int, cachelens: int, declen: int) -> Tensor:
-        """
-        Get the causal mask for the attention.
-        Args:
-            bsz: The batch size.
-            cachelens: The number of cached tokens.
-            declen: The length of the decoded tokens.
-        Returns:
-            The causal mask for the attention. Shape: [declen, cachelens+declen]
-        """
-        return torch.tril(torch.ones(bsz, declen, cachelens+declen, device=self.device, dtype=torch.bool))
-    
     def setup_common_attn_mask_and_position_ids(self):
         """
         Build non-causal MTP attention mask (bool) and position_ids.
@@ -540,7 +508,7 @@ class MTPEngine(BaseEngine):
     def interleave_mask_tokens(
         self,
         input_ids: Tensor
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Interleave mask tokens with input tokens.
         
         Transforms [x_0, x_1, ...] into [x_0, m_1, ..., m_k, x_1, m_1, ..., m_k, ...]
@@ -550,7 +518,7 @@ class MTPEngine(BaseEngine):
             input_ids: Input token IDs of shape (batch_size, seq_len)
             
         Returns:
-            Tuple of (interleaved_ids, gate_mask)
+            tuple of (interleaved_ids, gate_mask)
             - interleaved_ids: Shape (batch_size, seq_len * (draft_length + 1))
             - gate_mask: 0 for tokens, 1 for masks
         """
@@ -579,16 +547,16 @@ class MTPEngine(BaseEngine):
     def evaluate_posterior(
         self,
         draft_tokens: Tensor,
-        target_preds: Tensor,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
+        target_preds_or_logits: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:
         """
         Evaluate the posterior for the draft tokens.
 
         Args:
             draft_tokens (torch.Tensor): The tokens that are generated by the sampler. Shape: [bsz, draft_length]
-            target_preds (torch.Tensor)
+            target_preds_or_logits (torch.Tensor)
                 - (Greedy) The predicted tokens by the target model. Shape: [bsz, draft_length + 1]
-                - (Sampling) The predicted logits by the target model. Shape: [bsz, draft_length + 1]
+                - (Sampling) The predicted logits by the target model. Shape: [bsz, draft_length + 1, target_vocab_size]
 
         Returns:
             bonus_tokens (torch.Tensor): The bonus tokens. Shape: [bsz, 1]
@@ -598,22 +566,23 @@ class MTPEngine(BaseEngine):
         bsz, draft_length = draft_tokens.shape
         if self.greedy:
             eos_condition = (draft_tokens == self.eos_token_id) # [bsz, draft_length]
-            accept_flags_matrix = target_preds[:, :draft_length] == draft_tokens # [bsz, draft_length]
+            accept_flags_matrix = target_preds_or_logits[:, :draft_length] == draft_tokens # [bsz, draft_length]
+            accept_flags_matrix = accept_flags_matrix.int().cumprod(dim=1).bool()
             accept_nums = accept_flags_matrix.sum(dim=1, keepdim=True) + 1  # [bsz, 1]
             
-            bonus_tokens = target_preds.gather(1, accept_nums - 1) # [bsz, 1]
+            bonus_tokens = target_preds_or_logits.gather(1, accept_nums - 1) # [bsz, 1]
             eos_accepted = (eos_condition & accept_flags_matrix).any(dim=1, keepdim=True) # [bsz, 1]
             return bonus_tokens, accept_nums[:, 0], eos_accepted
         else:
-            vocab_size = target_preds.shape[-1]
+            vocab_size = target_preds_or_logits.shape[-1]
 
-            target_probs = get_sampling_probs(target_preds, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature) # [bsz, draft_length+1, V]
-            draft_probs = torch.zeros((bsz * draft_length, vocab_size), dtype=target_preds.dtype, device=target_preds.device)
+            target_probs = get_sampling_probs(target_preds_or_logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature) # [bsz, draft_length+1, V]
+            draft_probs = torch.zeros((bsz * draft_length, vocab_size), dtype=target_preds_or_logits.dtype, device=target_preds_or_logits.device)
             draft_probs.scatter_(1, draft_tokens.reshape(-1, 1), 1.0)
             draft_probs = draft_probs.reshape(bsz, draft_length, vocab_size)
 
             output_tokens, _, emitted_nums = chain_speculative_sampling(draft_probs, draft_tokens, target_probs)
-            accept_nums = emitted_nums + 1 # [bsz, 1]
+            accept_nums = emitted_nums + 1 # [bsz]
             
             last_valid_idx = ((output_tokens != -1).to(torch.long) * torch.arange(output_tokens.size(1), device=output_tokens.device)).argmax(dim=1, keepdim=True)
             bonus_tokens = output_tokens.gather(1, last_valid_idx) # [bsz, 1]
@@ -683,7 +652,7 @@ class MTPEngine(BaseEngine):
         draft_tokens: Tensor,
         bonus_tokens: Tensor,
         accept_nums: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Force budget by suppressing specific tokens.
         
         Args:
@@ -692,7 +661,7 @@ class MTPEngine(BaseEngine):
             accept_nums: Accept counts
             
         Returns:
-            Tuple of (updated_bonus_tokens, updated_accept_nums)
+            tuple of (updated_bonus_tokens, updated_accept_nums)
         """
         suppressed_accept_nums = accept_nums.clone()
         suppress_mask_in_accepted = (draft_tokens == self.suppress_token_id)

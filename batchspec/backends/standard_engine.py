@@ -59,7 +59,7 @@ class StandardEngine(BaseEngine):
         max_seq_length: int = 2048,
         page_size: int = 16,
         prefill_chunk_size: int = 128,
-        decode_length: int = 1
+        attn_buffer_size_mb: int = 384,
     ):
         """Setup KV caches and attention wrappers.
         
@@ -68,7 +68,7 @@ class StandardEngine(BaseEngine):
             max_seq_length: Maximum sequence length
             page_size: Size of each page
             prefill_chunk_size: Chunk size for prefill
-            decode_length: number of tokens to decode
+            attn_buffer_size_mb: Size of attention buffer in MB
         """
         # Setup base caches (add 1 for potential decode token)
         self.max_seq_len = max_seq_length
@@ -76,8 +76,8 @@ class StandardEngine(BaseEngine):
         super().setup_caches(batch_size, max_seq_length + 1, page_size, prefill_chunk_size)
 
         # Create attention wrappers
-        self.attn_buffer = self._create_attention_buffer(384)
-        self.attn_wrapper = self._create_attention_wrapper(self.attn_buffer, qo_indptr=self.qo_indptr)
+        self.attn_buffer = self._create_attention_buffer(attn_buffer_size_mb)
+        self.attn_wrapper = self._create_attention_wrapper(batch_size, self.attn_buffer)
         
         # Setup model caches
         max_num_pages = self.kv_page_table.max_num_pages_per_request * batch_size
@@ -95,16 +95,18 @@ class StandardEngine(BaseEngine):
         self.forward = torch.compile(self.forward)
 
 
-    def forward(self, input_ids: Tensor, qo_indptr: Tensor) -> Tensor:
+    def forward(self, input_ids: Tensor) -> Tensor:
         """Single step forward.
         
         Args:
             input_ids: Input token IDs [bsz, seq_len]
-            qo_indptr: Index pointer for Query/Output tokens [bsz + 1]
             
         Returns:
             Logits of shape (bsz, seq_len, vocab_size)
         """
+        bsz, seq_len = input_ids.shape
+        qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * seq_len
+        
         self.pre_forward(qo_indptr)
         with torch.inference_mode():
             logits = self.model(
@@ -143,23 +145,14 @@ class StandardEngine(BaseEngine):
         Returns:
             Next token predictions [bsz, 1]
         """        
-        bsz, seq_len = input_ids.shape
+        _, seq_len = input_ids.shape
         assert seq_len % self.prefill_chunk_size == 0, f"The sequence length must be divisible by the prefill chunk size, but got seq_len={seq_len} and prefill_chunk_size={self.prefill_chunk_size}"
         
         chunk_size = self.prefill_chunk_size
         num_chunks = seq_len // chunk_size
         for i in range(num_chunks):
             chunk_input_ids = input_ids[:, i*chunk_size:(i+1)*chunk_size]
-            chunk_seq_len = chunk_input_ids.shape[1]
-            
-            # Target prefill
-            qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * chunk_seq_len
-            logits = self.forward(
-                input_ids=chunk_input_ids,
-                qo_indptr=qo_indptr,
-            ) # [bsz, chunk_seq_len, vocab_size]
-            import pdb; pdb.set_trace()
-
+            logits = self.forward(chunk_input_ids) # [bsz, chunk_seq_len, vocab_size]
         return sample(logits[:, -1, :], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
 
     
@@ -172,14 +165,10 @@ class StandardEngine(BaseEngine):
         Returns:
             Next token predictions [bsz, 1]
         """
-        bsz, seq_len = input_ids.shape
+        _, seq_len = input_ids.shape
         assert seq_len == 1, f"The input length must be 1 for decode, but got {seq_len}"
 
-        logits = self.forward(
-            input_ids=input_ids,
-            qo_indptr=torch.arange(bsz + 1, device=self.device, dtype=torch.int32),
-        ) # [bsz, 1, vocab_size]
-        
+        logits = self.forward(input_ids) # [bsz, 1, vocab_size]
         return sample(logits[:, 0, :], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
 
 

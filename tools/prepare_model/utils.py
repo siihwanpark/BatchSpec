@@ -4,7 +4,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import torch
 from huggingface_hub import snapshot_download
@@ -69,12 +69,12 @@ def cleanup_original_files(checkpoint_dir: Path) -> None:
     print(f"Cleanup completed. Removed {removed_count} file(s).")
 
 
-def find_model_files(checkpoint_dir: Path) -> Tuple[Optional[Path], Optional[Path]]:
+def find_model_files(checkpoint_dir: Path) -> tuple[Optional[Path], Optional[Path]]:
     """
     Find model weight files in a directory.
     
     Returns:
-        Tuple of (index_file, weight_file). One will be None.
+        tuple of (index_file, weight_file). One will be None.
     """
     # Try index files first (for sharded models)
     possible_indices = [

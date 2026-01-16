@@ -6,14 +6,14 @@ import torch
 from torch import Tensor
 
 from .configs import ModelArgs
-from .modules import RoPEMixin, StandardAttention, StandardKVCache
+from .modules import StandardAttention, StandardKVCache, setup_rope_function
 from .base_model import BaseTransformerBlock, BaseTransformer
 
 if TYPE_CHECKING:
     from batchspec.backends.base.page_table import PageTable
 
 
-class StandardTransformer(BaseTransformer, RoPEMixin):
+class StandardTransformer(BaseTransformer):
     """Standard transformer model for autoregressive generation.
     
     Supports prefill, verify, and decode attention patterns.
@@ -42,7 +42,7 @@ class StandardTransformer(BaseTransformer, RoPEMixin):
             attn_kernel: Attention kernel
         """
         # Setup RoPE function (uses offsets, not position_ids)
-        rope_func = self._setup_rope_kernels(use_position_ids=False)
+        rope_func = setup_rope_function(self.config, use_position_ids=False)
         
         # Determine dtype for cache
         dtype = (

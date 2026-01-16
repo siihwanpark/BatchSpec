@@ -1,6 +1,10 @@
-"""EAGLE transformer implementation with unified chain/standard modes."""
+"""EAGLE transformer implementation with unified chain/tree modes.
 
-from typing import Optional, Union, List
+References:
+- https://github.com/SafeAILab/EAGLE/blob/main/eagle/model/cnets.py
+"""
+
+from typing import Union, List, Any, Optional, TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -8,8 +12,11 @@ import torch.distributed as dist
 from torch import Tensor
 
 from .configs import ModelArgs
-from .modules import RoPEMixin, StandardAttention, EAGLEAttention, StandardKVCache, RMSNorm, FeedForward
+from .modules import StandardAttentionWithNonCausalSupport, EAGLEAttention, StandardKVCache, RMSNorm, FeedForward, setup_rope_function
 from .base_model import BaseTransformerBlock, BaseTransformer
+
+if TYPE_CHECKING:
+    from batchspec.backends.base.page_table import PageTable
 
 
 class EAGLEModel(nn.Module):
@@ -20,36 +27,26 @@ class EAGLEModel(nn.Module):
     
     Args:
         config: Configuration for EAGLE module
-        use_chain_mode: Whether to use chain mode (different attention patterns)
     """
     
-    def __init__(self, config: ModelArgs, use_chain_mode: bool = False):
+    def __init__(self, config: ModelArgs):
         super().__init__()
         
         self.config = config
-        self.use_chain_mode = use_chain_mode
         
         # Projection layer for target hidden states
         # Projects concatenated hidden states from multiple layers
-        if hasattr(config, "target_hidden_size"):
-            self.fc = nn.Linear(
-                config.target_hidden_size * 3, 
-                config.dim, 
-                bias=False
-            )
+        if config.target_hidden_size is not None:
+            self.fc = nn.Linear(config.target_hidden_size * 3, config.dim, bias=False)
         else:
-            self.fc = nn.Linear(
-                config.dim * 3, 
-                config.dim, 
-                bias=False
-            )
+            self.fc = nn.Linear(config.dim * 3, config.dim, bias=False)
         
         # Normalization for hidden states and input embeddings
         self.hidden_norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.input_norm = RMSNorm(config.dim, eps=config.norm_eps)
         
         # EAGLE attention layer
-        self.attn = EAGLEAttention(config, use_chain_mode=use_chain_mode)
+        self.attn = EAGLEAttention(config)
         
         # Post-attention processing
         self.post_attn_norm = RMSNorm(config.dim, eps=config.norm_eps)
@@ -70,31 +67,41 @@ class EAGLEModel(nn.Module):
         self.world_size = None
         self.rank = None
 
+    def _maybe_all_gather_logits(self, logits: Tensor) -> Tensor:
+        """All-gather logits across all ranks for tensor parallel.
+        
+        Args:
+            logits: Local logits tensor
+            
+        Returns:
+            All-gathered logits from all ranks
+        """
+        if self.process_group is None:
+            return logits
+
+        gathered_logits = [
+            torch.empty_like(logits) 
+            for _ in range(self.world_size)
+        ]
+        dist.all_gather(gathered_logits, logits, group=self.process_group)
+        return torch.cat(gathered_logits, dim=-1)
+
     def forward(
         self,
-        hidden_states: Tensor,
         input_embeds: Tensor,
-        input_pos: Union[Tensor, tuple],
-        kv_append_indptr: Tensor,
-        kv_page_indices: Tensor,
-        kv_page_indptr: Tensor,
-        kv_page_lastlen: Tensor,
-        attn_type: str = "prefill"
-    ) -> Union[Tensor, tuple[Tensor, Tensor]]:
+        hidden_states: Tensor,
+        *args,
+        **kwargs,
+    ) -> tuple[Tensor, Tensor]:
         """Forward pass through EAGLE module.
         
         Args:
-            hidden_states: Hidden states from target model (concatenated from multiple layers)
             input_embeds: Input token embeddings
-            input_pos: Position information (varies by mode)
-            kv_append_indptr: Indices for KV cache appending
-            kv_page_indices: Page indices for KV cache
-            kv_page_indptr: Page indirection pointers
-            kv_page_lastlen: Last length of each page
-            attn_type: Type of attention computation
+            hidden_states: Hidden states from target model (concatenated from multiple layers)
+            *args, **kwargs: Additional arguments for attention
             
         Returns:
-            Logits tensor, or tuple of (logits, hidden_states) for chain mode
+            tuple of (logits, hidden_states)
         """
         # Project hidden states if dimension mismatch
         if hidden_states.shape[-1] != input_embeds.shape[-1]:
@@ -106,13 +113,9 @@ class EAGLEModel(nn.Module):
         input_embeds = self.input_norm(input_embeds)
         
         # Concatenate for EAGLE attention (expects 2*dim input)
-        attn_input = torch.cat([input_embeds, hidden_states], dim=-1)
+        hidden_states = torch.cat([input_embeds, hidden_states], dim=-1)
         
-        hidden_states = self.attn(
-            attn_input, input_pos, kv_append_indptr,
-            kv_page_indices, kv_page_indptr, kv_page_lastlen,
-            attn_type
-        )
+        hidden_states = self.attn(hidden_states, *args, **kwargs)
         hidden_states = residual + hidden_states
 
         # Feed Forward with residual
@@ -125,63 +128,76 @@ class EAGLEModel(nn.Module):
         logits = self.output(self.norm(hidden_states))
         
         # Gather logits for distributed training
-        if self.process_group is not None:
-            gathered_logits = [
-                torch.empty_like(logits) 
-                for _ in range(self.world_size)
-            ]
-            dist.all_gather(gathered_logits, logits, group=self.process_group)
-            logits = torch.cat(gathered_logits, dim=-1)
+        logits = self._maybe_all_gather_logits(logits)
 
         # Return both logits and hidden states for chain mode
-        if self.use_chain_mode:
-            return logits, hidden_states
-        else:
-            return logits
+        return logits, hidden_states
+
+    
+    def convert_vocab(self, draft_tokens: Tensor) -> Tensor:
+        """Convert draft tokens to target tokens.
+        
+        Args:
+            draft_tokens: Draft tokens [bsz, seq_len]
+            
+        Returns:
+            Target tokens [bsz, seq_len]
+        """
+        return draft_tokens + self.draft_to_target[draft_tokens]
 
 
-class EAGLETransformer(BaseTransformer, RoPEMixin):
+class EAGLETransformer(BaseTransformer):
     """EAGLE-augmented transformer for speculative decoding.
     
-    Combines a target model with an EAGLE module for efficient
-    multi-token speculation.
+    Combines a target model with an EAGLE module for efficient speculative decoding.
     
     Args:
         config: Target model configuration
         eagle_config: EAGLE module configuration
-        use_chain_mode: Whether to use chain mode
     """
     
     def __init__(
         self,
         config: ModelArgs,
         eagle_config: ModelArgs,
-        use_chain_mode: bool = False
     ):
         super().__init__(config)
-        self.use_chain_mode = use_chain_mode
         
         # EAGLE speculation module
-        self.eagle = EAGLEModel(eagle_config, use_chain_mode=use_chain_mode)
+        self.eagle = EAGLEModel(eagle_config)
     
     def _get_attention_class(self):
-        """Return StandardAttention class for target model."""
-        return StandardAttention
+        """Return StandardAttentionWithNonCausalSupport class for target model."""
+        return StandardAttentionWithNonCausalSupport
     
     def _get_block_class(self):
         """Return BaseTransformerBlock class."""
         return BaseTransformerBlock
     
-    def setup_caches(self, num_pages: int, page_size: int):
+    def setup_caches(self,
+        target_num_pages: int,
+        eagle_num_pages: int,
+        page_size: int,
+        causal_attn_kernel: Any,
+        eagle_attn_kernel: Any,
+        non_causal_attn_kernel: Optional[Any] = None
+    ):
         """Setup KV caches and attention kernels.
         
         Args:
-            num_pages: Total number of pages to allocate
+            target_num_pages: Total number of pages to allocate for target model
+            eagle_num_pages: Total number of pages to allocate for EAGLE module
             page_size: Size of each page (tokens per page)
+            causal_attn_kernel: Causal attention kernel for target model
+            eagle_attn_kernel: Attention kernel for EAGLE module
+            non_causal_attn_kernel: Non-causal attention kernel for target model (Not used in chain mode)
         """
         # Setup RoPE function
-        # Chain mode uses offsets, standard mode uses position IDs
-        rope_func = self._setup_rope_kernels(use_position_ids=(not self.use_chain_mode))
+        # Here we separate the RoPE function for target model and EAGLE module
+        # to handle the different RoPE configurations between target model and EAGLE module
+        # (e.g. DeepSeek-R1-Llama-8B and EAGLE3-DeepSeek-R1-Distill-LLaMA-8B)
+        target_rope_func = setup_rope_function(self.config, use_position_ids=True)
+        eagle_rope_func = setup_rope_function(self.eagle.config, use_position_ids=True)
         
         # Determine dtype for cache
         dtype = (
@@ -194,148 +210,116 @@ class EAGLETransformer(BaseTransformer, RoPEMixin):
         for layer in self.layers:
             attn = layer.attention
             
-            # Initialize KV cache
+            attn.rope = target_rope_func
+            attn.causal_attn_kernel = causal_attn_kernel
+            attn.non_causal_attn_kernel = non_causal_attn_kernel
             attn.kv_cache = StandardKVCache(
-                num_pages, page_size,
-                self.config.n_local_heads,
-                self.config.head_dim,
-                dtype
+                max_num_pages=target_num_pages,
+                page_size=page_size,
+                n_heads=self.config.n_local_heads,
+                head_dim=self.config.head_dim,
+                dtype=dtype
             )
-            
-            # Register target-specific attention kernels
-            attn.attn_prefill = torch.ops.mylib.target_prefill_attn
-            attn.attn_verify = torch.ops.mylib.target_verify_attn
-            attn.rope = rope_func
-            
-            # Store whether we use position IDs for this attention
-            attn.use_position_ids = (not self.use_chain_mode)
         
         # Setup EAGLE module attention
         eagle_attn = self.eagle.attn
-        
         eagle_attn.kv_cache = StandardKVCache(
-            num_pages, page_size,
-            self.eagle.config.n_local_heads,
-            self.eagle.config.head_dim,
-            dtype
+            max_num_pages=eagle_num_pages,
+            page_size=page_size,
+            n_heads=self.eagle.config.n_local_heads,
+            head_dim=self.eagle.config.head_dim,
+            dtype=dtype
         )
         
-        eagle_attn.prefill_attn = torch.ops.mylib.eagle_prefill_attn
-        eagle_attn.rope = rope_func
-        eagle_attn.use_position_ids = (not self.use_chain_mode)
-        
-        # Set mode-specific kernels
-        if self.use_chain_mode:
-            eagle_attn.decode_1_attn = torch.ops.mylib.eagle_decode_1_attn
-            eagle_attn.decode_2_attn = torch.ops.mylib.eagle_decode_2_attn
-        else:
-            eagle_attn.init_speculate_attn = torch.ops.mylib.eagle_init_speculate_attn
-            eagle_attn.sub_speculate_attn = torch.ops.mylib.eagle_sub_speculate_attn
+        eagle_attn.rope = eagle_rope_func
+        eagle_attn.attn_kernel = eagle_attn_kernel
     
     def forward(
         self,
-        idx: Tensor,
-        input_pos: Tensor,
-        kv_append_indptr: Tensor,
-        kv_page_indices: Tensor,
-        kv_page_indptr: Tensor,
-        kv_page_lastlen: Tensor,
-        return_hidden_states: bool = False,
-        attn_type: str = "prefill"
+        input_ids: Tensor,
+        qo_indptr: Tensor,
+        position_ids: Tensor,
+        kv_page_table: "PageTable",
+        causal: bool = True,
     ) -> Union[Tensor, tuple[Tensor, List[Tensor]]]:
         """Forward pass through target model.
         
         Args:
-            idx: Input token indices
-            input_pos: Position information
-            kv_append_indptr: Indices for KV cache appending
-            kv_page_indices: Page indices for KV cache
-            kv_page_indptr: Page indirection pointers
-            kv_page_lastlen: Last length of each page
-            return_hidden_states: Whether to return intermediate hidden states
-            attn_type: Type of attention
+            input_ids: Input token indices
+            qo_indptr: Index pointer for Query/Output tokens
+            position_ids: Position IDs for RoPE
+            kv_page_table: Page table for KV cache
+            causal: Whether to use causal attention
             
         Returns:
             Logits, or tuple of (logits, hidden_states) if return_hidden_states=True
         """
-        if return_hidden_states:
-            hidden_states = []
-        
         # Embed tokens
-        x = self.tok_embeddings(idx)
+        x = self.tok_embeddings(input_ids)
         
         # Process through transformer layers
+        hidden_states = []
         for i, layer in enumerate(self.layers):
-            x = layer(
-                x, input_pos, kv_append_indptr,
-                kv_page_indices, kv_page_indptr, kv_page_lastlen,
-                attn_type=attn_type,
-                use_position_ids=(not self.use_chain_mode)
+            x = layer(x,
+                qo_indptr=qo_indptr,
+                position_ids=position_ids,
+                kv_page_table=kv_page_table,
+                causal=causal,
             )
             
             # Collect hidden states from specific layers for EAGLE
-            if return_hidden_states and i in [2, len(self.layers)//2, len(self.layers)-3]:
+            if i in [2, len(self.layers)//2, len(self.layers)-3]:
                 hidden_states.append(x)
-        
+        hidden_states = torch.cat(hidden_states, dim=-1)
+
         # Final normalization and projection
         x = self.norm(x)
         logits = self.output(x)
         
         # Gather logits for distributed training
-        logits = self._gather_logits(logits)
-        
-        if return_hidden_states:
-            return logits, hidden_states
-        
-        return logits
+        logits = self._maybe_all_gather_logits(logits)
+        return logits, hidden_states
     
     def eagle_forward(
         self,
+        input_ids: Tensor,
         hidden_states: Tensor,
-        idx: Tensor,
-        input_pos: Tensor,
-        kv_append_indptr: Tensor,
-        kv_page_indices: Tensor,
-        kv_page_indptr: Tensor,
-        kv_page_lastlen: Tensor,
-        attn_type: str = "prefill"
-    ) -> Union[Tensor, tuple[Tensor, Tensor]]:
+        qo_indptr: Tensor,
+        position_ids: Tensor,
+        kv_page_table: "PageTable",
+    ) -> tuple[Tensor, Tensor]:
         """Forward pass through EAGLE module.
         
         Args:
-            hidden_states: Hidden states from target model
-            idx: Input token indices
-            input_pos: Position information
-            kv_append_indptr: Indices for KV cache appending
-            kv_page_indices: Page indices for KV cache
-            kv_page_indptr: Page indirection pointers
-            kv_page_lastlen: Last length of each page
-            attn_type: Type of attention
+            input_ids: Input token indices [bsz, seq_len]
+            hidden_states: Hidden states from target model [bsz, seq_len, hidden_size * 3]
+            qo_indptr: Index pointer for Query/Output tokens [bsz + 1]
+            position_ids: Position IDs for RoPE [bsz * seq_len]
+            kv_page_table: Page table for KV cache
             
         Returns:
-            EAGLE output (logits, or logits+hidden_states for chain mode)
+            EAGLE output (logits, hidden_states)
         """
-        input_embeds = self.tok_embeddings(idx)
+        input_embeds = self.tok_embeddings(input_ids)
         return self.eagle(
-            hidden_states, input_embeds, input_pos,
-            kv_append_indptr, kv_page_indices, 
-            kv_page_indptr, kv_page_lastlen,
-            attn_type
+            input_embeds=input_embeds,
+            hidden_states=hidden_states,
+            qo_indptr=qo_indptr,
+            position_ids=position_ids,
+            kv_page_table=kv_page_table,
         )
     
     @classmethod
     def from_name(
         cls,
         target_name: str,
-        drafter_name: str,
-        use_chain_mode: bool = False
+        eagle_name: str,
     ):
         """Create EAGLE model from configuration names.
         
         Args:
             target_name: Target model configuration name
-            drafter_name: EAGLE module configuration name
-            use_chain_mode: Whether to use chain mode
+            eagle_name: EAGLE module configuration name
             
         Returns:
             EAGLETransformer instance
@@ -343,6 +327,6 @@ class EAGLETransformer(BaseTransformer, RoPEMixin):
         from .configs import get_config
         
         target_config = get_config(target_name)
-        eagle_config = get_config(drafter_name)
+        eagle_config = get_config(eagle_name)
         
-        return cls(target_config, eagle_config, use_chain_mode)
+        return cls(target_config, eagle_config)

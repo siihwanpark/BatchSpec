@@ -4,6 +4,7 @@ import torch
 from torch import Tensor
 
 from ..utils.paging import PageManager
+from batchspec.models import BaseTransformer, EAGLEModel
 
 class PageTable:
     """
@@ -136,6 +137,20 @@ class PageTable:
         self.paged_kv_last_page_len = new_tail
         self.cachelens = (self.cachelens - del_lens).clamp_min(0)
 
+    @staticmethod
+    def flush_model_kv_cache(model: torch.nn.Module):
+        """Flush the KV cache of the model.
+        
+        Args:
+            model: Model to flush KV cache from
+        """
+        if isinstance(model, BaseTransformer):
+            for layer in model.layers:
+                layer.attention.kv_cache.kv_cache.zero_()
+        else:
+            assert isinstance(model, EAGLEModel), "Model must be an instance of EAGLEModel"
+            model.attn.kv_cache.kv_cache.zero_()
+        
     def clear_kv(self, model: Optional[torch.nn.Module] = None):
         """Clear all KV caches and reset state.
         
@@ -144,8 +159,7 @@ class PageTable:
         """
         # Zero out KV cache in model
         if model is not None:
-            for layer in model.layers:
-                layer.attention.kv_cache.kv_cache.zero_()
+            self.flush_model_kv_cache(model)
         
         self.cachelens.zero_()
         self.page_manager.reset()

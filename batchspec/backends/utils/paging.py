@@ -2,7 +2,7 @@
 
 """
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
@@ -241,7 +241,7 @@ class PageManager:
         remove_counts: torch.Tensor,
         kv_page_indices: torch.Tensor,
         kv_page_indptr: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Remove pages from requests (vectorized one-shot operation).
         
         Args:
@@ -250,7 +250,7 @@ class PageManager:
             kv_page_indptr: Current page indptr
             
         Returns:
-            Tuple of (updated_indptr, updated_indices)
+            tuple of (updated_indptr, updated_indices)
         """
         device = self.num_allocated_pages.device
         remove_counts = remove_counts.to(device=device, dtype=torch.int32).clamp_min(0)

@@ -8,14 +8,14 @@ import torch.distributed as dist
 from torch import Tensor
 
 from .configs import ModelArgs, LoRAConfig
-from .modules import RoPEMixin, MTPAttention, StandardKVCache, SamplerHead
+from .modules import MTPAttention, StandardKVCache, SamplerHead, setup_rope_function
 from .base_model import BaseTransformer, GatedLoRATransformerBlock
 
 if TYPE_CHECKING:
     from batchspec.backends.base.page_table import PageTable
 
 
-class MTPTransformer(BaseTransformer, RoPEMixin):
+class MTPTransformer(BaseTransformer):
     """Multi-Token Prediction transformer with gated LoRA and sampling.
     This model supports gated LoRA and includes a sampler module for multi-token prediction.
     
@@ -61,7 +61,7 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
             non_causal_attn_kernel: Non-causal attention kernel
         """
         # Setup RoPE function (uses position IDs)
-        rope_func = self._setup_rope_kernels(use_position_ids=True)
+        rope_func = setup_rope_function(self.config, use_position_ids=True)
         
         # Determine dtype for cache
         dtype = (
@@ -75,8 +75,8 @@ class MTPTransformer(BaseTransformer, RoPEMixin):
             attn = layer.attention
 
             attn.rope = rope_func
-            attn.causal_attn_kernel = causal_attn_kernel
-            attn.non_causal_attn_kernel = non_causal_attn_kernel
+            attn.causal_attn = causal_attn_kernel
+            attn.non_causal_attn = non_causal_attn_kernel
             attn.kv_cache = StandardKVCache(
                 max_num_pages=num_pages,
                 page_size=page_size,

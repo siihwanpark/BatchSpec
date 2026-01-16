@@ -6,7 +6,7 @@ import os
 from dataclasses import asdict
 from collections import defaultdict
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -55,7 +55,7 @@ class Profiler:
         self._iters_elapsed_ms: List[float] = []
         self._iter_tokens: List[int] = []  # accepted tokens per step
         self._iter_kv_lens: List[int] = []  # KV length at start of step
-        self._iter_events: List[Tuple[str, Any, Any, str]] = []  # (etype,start,end,bucket)
+        self._iter_events: List[tuple[str, Any, Any, str]] = []  # (etype,start,end,bucket)
         self._iters_model_sums: List[Dict[str, float]] = []
         self._iters_engine_sums: List[Dict[str, float]] = []
         self._pending_step_tokens: int = 0
@@ -77,7 +77,7 @@ class Profiler:
         self._g_engine_bucket_sum_ms: Dict[str, float] = {}
         
         # Global decode-length bucket aggregation
-        self._g_len_bins_meta: List[Tuple[Optional[int], Optional[int], str]] = self._build_len_bins()
+        self._g_len_bins_meta: List[tuple[Optional[int], Optional[int], str]] = self._build_len_bins()
         self._g_len_bins_data: Dict[str, Dict[str, Any]] = {
             meta[2]: {"lat_ms": [], "tokens": 0, "time_ms": 0.0, "steps": 0}
             for meta in self._g_len_bins_meta
@@ -138,10 +138,10 @@ class Profiler:
             v = t.mean()
         return int(v.item())
 
-    def _build_len_bins(self) -> List[Tuple[Optional[int], Optional[int], str]]:
+    def _build_len_bins(self) -> List[tuple[Optional[int], Optional[int], str]]:
         """Build length bucket metadata."""
         edges = sorted(int(x) for x in self.cfg.kv_bins)
-        metas: List[Tuple[Optional[int], Optional[int], str]] = []
+        metas: List[tuple[Optional[int], Optional[int], str]] = []
         for i in range(len(edges) - 1):
             lo, hi = edges[i], edges[i + 1]
             metas.append((lo, hi, f"[{lo},{hi})"))

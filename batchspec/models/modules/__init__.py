@@ -2,13 +2,13 @@
 
 from .attention import (
     BaseAttention, GatedLoRAAttention,
-    StandardAttention, EAGLEAttention, MTPAttention
+    StandardAttention, StandardAttentionWithNonCausalSupport, EAGLEAttention, MTPAttention
 )
 from .feedforward import FeedForward, GatedLoRAFeedForward
 from .kv_cache import StandardKVCache, StreamingKVCache
 from .lora import GatedLoRALinear
 from .normalization import RMSNorm
-from .rope import RoPEMixin
+from .rope import setup_rope_function
 from .sampler_head import SamplerHead, SamplerHeadBlock
 
 
@@ -16,6 +16,7 @@ __all__ = [
     "BaseAttention",
     "GatedLoRAAttention",
     "StandardAttention",
+    "StandardAttentionWithNonCausalSupport",
     "EAGLEAttention",
     "MTPAttention",
     "FeedForward",
@@ -24,7 +25,7 @@ __all__ = [
     "StreamingKVCache",
     "GatedLoRALinear",
     "RMSNorm",
-    "RoPEMixin",
+    "setup_rope_function",
     "SamplerHead",
     "SamplerHeadBlock",
 ]

@@ -32,17 +32,16 @@ class AttentionWrapperMixin:
     
     def _create_attention_wrapper(
         self,
+        batch_size: int,
         buffer: Tensor,
-        qo_indptr: Tensor,
         use_custom_mask: bool = False,
         custom_mask_buf: Optional[Tensor] = None,
-        mask_indptr_buf: Optional[Tensor] = None
     ) -> Any:
         """Create a FlashInfer attention wrapper.
         
         Args:
+            batch_size: Batch size
             buffer: Pre-allocated buffer for attention computation
-            qo_indptr: Index pointer for Query/Output tokens
             use_custom_mask: Whether to use custom attention mask
             custom_mask_buf: Custom mask buffer (if use_custom_mask=True)
             mask_indptr_buf: Mask indirection pointer buffer (if use_custom_mask=True)
@@ -54,7 +53,7 @@ class AttentionWrapperMixin:
             float_workspace_buffer=buffer,
             kv_layout="NHD",
             use_cuda_graph=True,
-            qo_indptr_buf=qo_indptr,
+            qo_indptr_buf=torch.arange(batch_size + 1, dtype=torch.int32, device=self.device),
             paged_kv_indptr_buf=self.kv_page_table.paged_kv_indptr,
             paged_kv_indices_buf=self.kv_page_table.paged_kv_indices,
             paged_kv_last_page_len_buf=self.kv_page_table.paged_kv_last_page_len
@@ -62,11 +61,11 @@ class AttentionWrapperMixin:
         
         # Add custom mask buffers if needed
         if use_custom_mask:
-            if custom_mask_buf is None or mask_indptr_buf is None:
-                raise ValueError("custom_mask_buf and mask_indptr_buf must be provided when use_custom_mask=True")
+            if custom_mask_buf is None:
+                raise ValueError("custom_mask_buf must be provided when use_custom_mask=True")
             wrapper_kwargs.update(
                 custom_mask_buf=custom_mask_buf,
-                mask_indptr_buf=mask_indptr_buf
+                mask_indptr_buf=torch.arange(batch_size + 1, dtype=torch.int32, device=self.device)
             )
         
         return flashinfer.BatchPrefillWithPagedKVCacheWrapper(**wrapper_kwargs)

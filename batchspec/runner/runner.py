@@ -46,7 +46,14 @@ class Runner:
             'group': process_group
         }
 
-        if self.args.backend == "mtp":
+        if self.args.backend == "eagle":
+            assert self.args.eagle_checkpoint_path is not None, "EAGLE drafter checkpoint path is required for EAGLE backend"
+            load_params.update({
+                'eagle_checkpoint_path': self.args.eagle_checkpoint_path,
+                'eagle_name': self.args.eagle_name,
+                'use_eagle_tp': self.args.use_eagle_tp,
+            })
+        elif self.args.backend == "mtp":
             assert self.args.lora_checkpoint_path is not None, "LoRA checkpoint path is required for MTP backend"
             load_params.update({
                 'lora_checkpoint_path': self.args.lora_checkpoint_path,
@@ -90,6 +97,8 @@ class Runner:
         
         # Clear the KV cache for the first run
         self.engine.kv_page_table.clear_kv(self.engine.model)
+        if self.args.backend == "eagle" and hasattr(self.engine, "eagle_kv_page_table"):
+            self.engine.eagle_kv_page_table.clear_kv(self.engine.model.eagle)
 
         # Run the benchmark
         for i, prefix_len in enumerate(self.args.prefix_len_list):

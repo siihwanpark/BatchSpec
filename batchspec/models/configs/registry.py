@@ -123,6 +123,11 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
     ),
     
     # Drafter models
+    "Qwen3-8B_eagle3": dict(
+        block_size=40960, n_layer=1, n_head=32, n_local_heads=8, 
+        dim=4096, intermediate_size=12288, vocab_size=151936, 
+        draft_vocab_size=32000, rope_base=1000000.0, norm_eps=1e-6,
+    ),
     "EAGLE3-DeepSeek-R1-Distill-LLaMA-8B": dict(
         block_size=2048, n_layer=1, n_head=32, n_local_heads=8, 
         dim=4096, intermediate_size=14336, vocab_size=128256, 

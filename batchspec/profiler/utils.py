@@ -2,7 +2,7 @@
 
 import math
 import os
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import torch.distributed as dist
 
@@ -11,7 +11,7 @@ import torch.distributed as dist
 # Statistics Helpers
 # ============================================================================
 
-def mean_std(vals: List[float]) -> Tuple[float, float, int]:
+def mean_std(vals: List[float]) -> tuple[float, float, int]:
     """Calculate mean and standard deviation."""
     vals = [float(v) for v in vals if v is not None]
     n = len(vals)
@@ -42,7 +42,7 @@ def dist_ready() -> bool:
     return dist.is_available() and dist.is_initialized()
 
 
-def rank_world() -> Tuple[int, int]:
+def rank_world() -> tuple[int, int]:
     """Get current rank and world size."""
     if dist_ready():
         return dist.get_rank(), dist.get_world_size()
@@ -53,7 +53,7 @@ def rank_world() -> Tuple[int, int]:
 # Bucket Utilities
 # ============================================================================
 
-def canon_bucket(bucket: str) -> Tuple[str, str]:
+def canon_bucket(bucket: str) -> tuple[str, str]:
     """
     Return (canonical_name, domain) where domain in {"model","engine"}.
     - Lowercases

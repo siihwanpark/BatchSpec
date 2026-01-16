@@ -28,9 +28,9 @@ class CommonArguments:
     tokenizer_path: str = field(
         metadata={"help": "Path to the tokenizer."}
     )
-    backend: Literal["standard", "mtp"] = field(
+    backend: Literal["standard", "eagle", "mtp"] = field(
         default="standard",
-        metadata={"help": "Backend name (standard, mtp)."}
+        metadata={"help": "Backend name (standard, eagle, mtp)."}
     )
     dataset: str = field(
         default="AIME2025",
@@ -103,13 +103,34 @@ class SamplingArguments:
 
 
 @dataclass
-class MTPArguments:
-    """MTP-specific arguments."""
+class SpecDecArguments:
+    """Speculative decoding arguments."""
     
     draft_length: int = field(
         default=4,
         metadata={"help": "Number of draft tokens to generate in one step."}
     )
+
+@dataclass
+class EAGLEArguments:
+    """EAGLE-specific arguments."""
+    eagle_name: str = field(
+        metadata={"help": "Name of the EAGLE drafter model."}
+    )
+    eagle_checkpoint_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the EAGLE drafter checkpoint weights (for EAGLE backend)."}
+    )
+    use_eagle_tp: bool = field(
+        default=False,
+        metadata={"help": "Use tensor parallelism for EAGLE drafter module."}
+    )
+
+
+@dataclass
+class MTPArguments:
+    """MTP-specific arguments."""
+    
     lora_checkpoint_path: Optional[str] = field(
         default=None,
         metadata={"help": "Path to the LoRA checkpoint weights (for MTP backend)."}
@@ -244,6 +265,8 @@ def parse_args() -> SimpleNamespace:
         CommonArguments,
         BenchmarkArguments,
         SamplingArguments,
+        SpecDecArguments,
+        EAGLEArguments,
         MTPArguments,
         LoRAArguments,
         ProfilerArguments,
@@ -251,9 +274,9 @@ def parse_args() -> SimpleNamespace:
     ))
     
     parsed = parser.parse_args_into_dataclasses()
-    (common, benchmark, sampling, mtp, lora, profiler, distributed) = parsed
+    (common, benchmark, sampling, specdec, eagle, mtp, lora, profiler, distributed) = parsed
     
-    merged = _merge_to_namespace(common, benchmark, sampling, mtp, lora, profiler, distributed)
+    merged = _merge_to_namespace(common, benchmark, sampling, specdec, eagle, mtp, lora, profiler, distributed)
     merged = _postprocess_args(merged)
     
     return merged

@@ -1,9 +1,7 @@
 """MTP (Multi-Token Prediction) attention implementation."""
 
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-import torch
-import torch.distributed as dist
 from torch import Tensor
 
 from .base import GatedLoRAAttention
@@ -28,7 +26,8 @@ class MTPAttention(GatedLoRAAttention):
         super().__init__(config, lora_config)
         
         # Attention kernel to be set during setup
-        self.attn_kernel = None
+        self.causal_attn = None
+        self.non_causal_attn = None
     
     def forward(
         self,
@@ -44,8 +43,8 @@ class MTPAttention(GatedLoRAAttention):
         Args:
             x: Input tensor of shape (batch_size, seq_len, dim)
             gate_mask: Optional mask for LoRA gating
-            position_ids: Position IDs for RoPE
             qo_indptr: Index pointer for Query/Output tokens
+            position_ids: Position IDs for RoPE (required for non-causal attention)
             kv_page_table: Page table for KV cache
             causal: Whether to use causal attention
         Returns:
@@ -74,8 +73,8 @@ class MTPAttention(GatedLoRAAttention):
         
         # Compute attention
         with attention_compute_timer():
-            if causal: y = self.causal_attn_kernel.run(q, kv_cache)
-            else: y = self.non_causal_attn_kernel.run(q, kv_cache)
+            if causal: y = self.causal_attn.run(q, kv_cache)
+            else: y = self.non_causal_attn.run(q, kv_cache)
         
         # Reshape and project output with gated LoRA
         y = y.contiguous().view(bsz, seqlen, self.dim)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from itertools import accumulate
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 import torch
 import torch.distributed as dist
@@ -52,14 +52,14 @@ def _validate_tp_size(num_kv_heads: int, num_heads: int) -> bool:
     return num_kv_heads % world_size == 0 and num_heads % world_size == 0
 
 
-def _rank_index_in_group(rank_group: Sequence[int]) -> Tuple[int, int, int]:
+def _rank_index_in_group(rank_group: Sequence[int]) -> tuple[int, int, int]:
     """Get rank information within a group.
     
     Args:
         rank_group: List of ranks in the group
         
     Returns:
-        Tuple of (global_rank, index_in_group, group_world_size)
+        tuple of (global_rank, index_in_group, group_world_size)
     """
     gr = _get_global_rank()
     assert rank_group and gr in rank_group, "rank_group must include current rank"
@@ -85,7 +85,7 @@ def _even_splits(total: int, parts: int) -> List[int]:
     return out
 
 
-def _kv_slice_for_rank(num_kv_heads: int, rank_group: Sequence[int]) -> Tuple[int, int]:
+def _kv_slice_for_rank(num_kv_heads: int, rank_group: Sequence[int]) -> tuple[int, int]:
     """Calculate KV head slice for current rank.
     
     Args:
@@ -93,7 +93,7 @@ def _kv_slice_for_rank(num_kv_heads: int, rank_group: Sequence[int]) -> Tuple[in
         rank_group: Rank group
         
     Returns:
-        Tuple of (start_idx, end_idx) for this rank's KV heads
+        tuple of (start_idx, end_idx) for this rank's KV heads
     """
     _, idx, world = _rank_index_in_group(rank_group)
     sizes = _even_splits(num_kv_heads, world)
@@ -126,8 +126,8 @@ def _qkv_split_slice_cat(
     t: torch.Tensor,
     dim: int,
     splits: Sequence[int],
-    q_slice: Tuple[int, int],
-    kv_slice: Tuple[int, int],
+    q_slice: tuple[int, int],
+    kv_slice: tuple[int, int],
 ) -> torch.Tensor:
     """Split [Q|K|V] tensor, slice blocks, and concatenate back.
     
@@ -333,8 +333,8 @@ def _lora_rowwise(ll: nn.Module, start: int, end: int) -> None:
 def _lora_qkv_colwise(
     ll: nn.Module,
     qkv_splits: Sequence[int],
-    q_slice: Tuple[int, int],
-    kv_slice: Tuple[int, int],
+    q_slice: tuple[int, int],
+    kv_slice: tuple[int, int],
 ) -> None:
     """Apply column-parallel sharding to fused QKV LoRA layer.
     
@@ -376,7 +376,7 @@ def _lora_qkv_colwise(
 # Slice Calculators
 # =============================================================================
 
-def _row_slice_inputs(linear: nn.Linear, rank_group: Sequence[int]) -> Tuple[int, int]:
+def _row_slice_inputs(linear: nn.Linear, rank_group: Sequence[int]) -> tuple[int, int]:
     """Calculate row-parallel slice on input dimension.
     
     Args:
@@ -384,7 +384,7 @@ def _row_slice_inputs(linear: nn.Linear, rank_group: Sequence[int]) -> Tuple[int
         rank_group: Rank group
         
     Returns:
-        Tuple of (start, end) for input features
+        tuple of (start, end) for input features
     """
     _, idx, world = _rank_index_in_group(rank_group)
     sizes = _even_splits(linear.in_features, world)
@@ -394,7 +394,7 @@ def _row_slice_inputs(linear: nn.Linear, rank_group: Sequence[int]) -> Tuple[int
     return start, end
 
 
-def _col_slice_outputs(linear: nn.Linear, rank_group: Sequence[int]) -> Tuple[int, int]:
+def _col_slice_outputs(linear: nn.Linear, rank_group: Sequence[int]) -> tuple[int, int]:
     """Calculate column-parallel slice on output dimension.
     
     Args:
@@ -402,7 +402,7 @@ def _col_slice_outputs(linear: nn.Linear, rank_group: Sequence[int]) -> Tuple[in
         rank_group: Rank group
         
     Returns:
-        Tuple of (start, end) for output features
+        tuple of (start, end) for output features
     """
     _, idx, world = _rank_index_in_group(rank_group)
     sizes = _even_splits(linear.out_features, world)

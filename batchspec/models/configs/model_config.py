@@ -31,9 +31,9 @@ class ModelArgs:
     norm_eps: float = 1e-5
     qkv_bias: bool = False
     qk_norm: bool = False
-    draft_vocab_size: int = 32000
     
     # For EAGLE models
+    draft_vocab_size: int = 32000
     target_hidden_size: Optional[int] = None
 
     def __post_init__(self):

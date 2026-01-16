@@ -1,7 +1,6 @@
 """Base attention classes and mixins."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
 
 import torch
 import torch.nn as nn
