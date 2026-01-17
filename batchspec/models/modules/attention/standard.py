@@ -1,9 +1,6 @@
 """Standard attention implementation."""
 
-from typing import Optional, TYPE_CHECKING
-
-import torch
-import torch.distributed as dist
+from typing import TYPE_CHECKING
 from torch import Tensor
 
 from .base import BaseAttention

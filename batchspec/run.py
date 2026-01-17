@@ -5,7 +5,9 @@ import torch.distributed as dist
 from transformers import AutoTokenizer
 
 from batchspec.backends.utils import init_dist, setup_seed
-from batchspec.backends import StandardEngine, StandaloneEngine, EAGLEChainEngine, MTPEngine
+from batchspec.backends import (
+    StandardEngine, StandaloneEngine, EAGLEChainEngine, MagicDecEngine, MTPEngine
+)
 from batchspec.profiler import Profiler, register_active_profiler, release_active_profiler
 from batchspec.runner import Runner, BatchSampler, load_benchmark_dataset
 from batchspec.args import parse_args
@@ -43,6 +45,8 @@ def main():
             engine = StandaloneEngine(tokenizer=tokenizer, dtype=args.dtype, device=args.device, draft_length=args.draft_length)
         elif args.backend == "eagle":
             engine = EAGLEChainEngine(tokenizer=tokenizer, dtype=args.dtype, device=args.device, draft_length=args.draft_length)
+        elif args.backend == "magicdec":
+            engine = MagicDecEngine(tokenizer=tokenizer, dtype=args.dtype, device=args.device, draft_length=args.draft_length)
         elif args.backend == "mtp":
             engine = MTPEngine(tokenizer=tokenizer, dtype=args.dtype, device=args.device, draft_length=args.draft_length)
         else:

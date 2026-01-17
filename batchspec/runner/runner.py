@@ -80,8 +80,17 @@ class Runner:
             'batch_size': self.args.batch_size, 
             'max_seq_length': self.args.max_len, 
             'page_size': 16,
-            'prefill_chunk_size': prefill_chunk_size.get(self.args.batch_size, 128)
+            'prefill_chunk_size': prefill_chunk_size.get(self.args.batch_size, 128),
+            'attn_buffer_size_mb': self.args.attn_buffer_size_mb,
         }
+
+        if self.args.backend == "magicdec":
+            assert self.args.num_sink_tokens is not None and self.args.stream_budget is not None, "Number of sink tokens and stream budget are required for MagicDec backend"
+            cache_params.update({
+                'num_sink_tokens': self.args.num_sink_tokens,
+                'stream_budget': self.args.stream_budget,
+            })
+        
         self.engine.setup_caches(**cache_params)
         self.engine.setup_sampling_params(
             temperature=self.args.temperature, 
@@ -130,7 +139,7 @@ class Runner:
         bsz = input_ids.shape[0]
         print(f"Total generated tokens: {total_gen_tokens}")
         print(f"Total model steps (batch_size): {total_model_steps} (batch_size: {bsz})")
-        print(f"➡️  Mean generated tokens: {total_gen_tokens / (total_model_steps * bsz):.2f}")
+        print(f"➡️  Mean generated tokens: {total_gen_tokens / (total_model_steps * bsz):.3f}")
 
     
     def _print_output(self, prefix_len, output, num_generated_tokens, model_steps):

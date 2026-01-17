@@ -66,20 +66,35 @@ export CUDA_VISIBLE_DEVICES=0
 #     --num_total_runs 3\
 #     --draft_length 4
 
-drafter=/workspace/checkpoints/Qwen3-0.6B/model.pth
+# drafter=/workspace/checkpoints/Qwen3-0.6B/model.pth
+# torchrun --standalone --nproc_per_node=1 -m batchspec.run\
+#     --backend standalone\
+#     --checkpoint_path $model_path\
+#     --tokenizer_path $tokenizer_path\
+#     --model_name $model_name\
+#     --drafter_name Qwen3-0.6B\
+#     --drafter_checkpoint_path $drafter\
+#     --rank_group 0\
+#     --dataset AIME2025 --force_budget\
+#     --dtype bfloat16\
+#     --batch_size 4 --prefix_len_list 1024 2048 --max_gen_len 128\
+#     --temperature 0.0\
+#     --printoutput\
+#     --profiling\
+#     --num_total_runs 3\
+#     --draft_length 4
+
 torchrun --standalone --nproc_per_node=1 -m batchspec.run\
-    --backend standalone\
+    --backend magicdec\
     --checkpoint_path $model_path\
     --tokenizer_path $tokenizer_path\
     --model_name $model_name\
-    --drafter_name Qwen3-0.6B\
-    --drafter_checkpoint_path $drafter\
     --rank_group 0\
     --dataset AIME2025 --force_budget\
     --dtype bfloat16\
-    --batch_size 4 --prefix_len_list 1024 2048 --max_gen_len 128\
-    --temperature 0.0\
+    --batch_size 2 --prefix_len_list 1024 2048 --max_gen_len 128\
+    --temperature 0.6 --top_p 0.95 --top_k 20\
     --printoutput\
     --profiling\
     --num_total_runs 3\
-    --draft_length 4
+    --draft_length 2 --num_sink_tokens 16 --stream_budget 256

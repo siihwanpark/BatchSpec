@@ -111,12 +111,13 @@ class StandardEngine(BaseEngine):
         """
         bsz, seq_len = input_ids.shape
         qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * seq_len
-        
+        past_cachelens = self.kv_page_table.cachelens.clone()
+
         self.pre_forward(qo_indptr)
         with torch.inference_mode():
             logits = self.model(
                 input_ids=input_ids,
-                position_offsets=self.kv_page_table.cachelens,
+                position_offsets=past_cachelens,
                 qo_indptr=qo_indptr,
                 kv_page_table=self.kv_page_table,
             ) # [bsz, seq_len, vocab_size]

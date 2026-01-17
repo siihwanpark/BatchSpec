@@ -4,7 +4,7 @@ import torch
 from torch import Tensor
 
 from ..utils.paging import PageManager
-from batchspec.models import BaseTransformer, EAGLEModel
+from batchspec.models import BaseTransformer, EAGLEModel, MagicDecTransformer
 
 class PageTable:
     """
@@ -15,22 +15,22 @@ class PageTable:
     def __init__(
         self,
         page_size: int,
-        max_batch_size: int,
+        batch_size: int,
         max_num_pages_per_request: int,
         device: torch.device
     ):
         self.page_size = page_size
-        self.max_batch_size = max_batch_size
+        self.batch_size = batch_size
         self.max_num_pages_per_request = max_num_pages_per_request
         self.device = device
         
-        self.page_manager = PageManager(max_batch_size, max_num_pages_per_request, device)
-        self.cachelens = torch.zeros(self.max_batch_size, dtype=torch.int32, device=self.device)
+        self.page_manager = PageManager(batch_size, max_num_pages_per_request, device)
+        self.cachelens = torch.zeros(self.batch_size, dtype=torch.int32, device=self.device)
         
         self.page_manager.reset()
-        self.paged_kv_indptr = torch.arange(self.max_batch_size + 1, dtype=torch.int32, device=self.device)
-        self.paged_kv_indices = torch.empty(max_batch_size * max_num_pages_per_request, dtype=torch.int32, device=self.device)
-        self.paged_kv_last_page_len = torch.empty(self.max_batch_size, dtype=torch.int32, device=self.device)
+        self.paged_kv_indptr = torch.arange(self.batch_size + 1, dtype=torch.int32, device=self.device)
+        self.paged_kv_indices = torch.empty(batch_size * max_num_pages_per_request, dtype=torch.int32, device=self.device)
+        self.paged_kv_last_page_len = torch.empty(self.batch_size, dtype=torch.int32, device=self.device)
 
 
     def _as_len_tensor(self, lens) -> Tensor:
@@ -144,7 +144,11 @@ class PageTable:
         Args:
             model: Model to flush KV cache from
         """
-        if isinstance(model, BaseTransformer):
+        if isinstance(model, MagicDecTransformer):
+            for layer in model.layers:
+                layer.attention.kv_cache.kv_cache.zero_()
+                layer.attention.draft_kv_cache.kv_cache.zero_()
+        elif isinstance(model, BaseTransformer):
             for layer in model.layers:
                 layer.attention.kv_cache.kv_cache.zero_()
         else:
@@ -163,7 +167,7 @@ class PageTable:
         
         self.cachelens.zero_()
         self.page_manager.reset()
-        self.paged_kv_indptr = torch.arange(self.max_batch_size + 1, dtype=torch.int32, device=self.device)
-        self.paged_kv_indices = self.page_manager.allocate(torch.ones(self.max_batch_size, dtype=torch.int32, device=self.device))
+        self.paged_kv_indptr = torch.arange(self.batch_size + 1, dtype=torch.int32, device=self.device)
+        self.paged_kv_indices = self.page_manager.allocate(torch.ones(self.batch_size, dtype=torch.int32, device=self.device))
         self.paged_kv_last_page_len.zero_()
         

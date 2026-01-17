@@ -53,6 +53,7 @@ from .modules import (
 from .base_model import BaseTransformer, BaseTransformerBlock, GatedLoRATransformerBlock
 from .standard_model import StandardTransformer
 from .eagle_model import EAGLETransformer, EAGLEModel
+from .magicdec_model import MagicDecTransformer
 from .mtp_model import MTPTransformer
 
 __all__ = [
@@ -89,9 +90,10 @@ __all__ = [
     
     # Transformers
     "StandardTransformer",
-    "MTPTransformer",
     "EAGLETransformer",
     "EAGLEModel",
+    "MagicDecTransformer",
+    "MTPTransformer",
 ]
 
 from typing import Optional
@@ -106,7 +108,7 @@ def get_model(
     
     Args:
         model_name: Name of the model configuration
-        model_type: Type of model ("standard", "eagle", "mtp")
+        model_type: Type of model ("standard", "eagle", "magicdec", "mtp")
         drafter_name: Name of the drafter configuration (for EAGLE model only)
         lora_config: LoRA configuration (for MTP model only)
     Returns:
@@ -118,6 +120,7 @@ def get_model(
     Example:
         >>> model = get_model("llama-3-8b", "standard")
         >>> model = get_model("llama-3-8b", "eagle", drafter_name="eagle-3-8b")
+        >>> model = get_model("llama-3-8b", "magicdec")
         >>> model = get_model("llama-3-8b", "mtp", lora_config=LoRAConfig(rank=16, alpha=32))
     """    
     model_type = model_type.lower()
@@ -128,6 +131,9 @@ def get_model(
         if drafter_name is None:
             raise ValueError("Drafter configuration is required for EAGLE model.")
         return EAGLETransformer.from_name(model_name, drafter_name)
+
+    elif model_type == "magicdec":
+        return MagicDecTransformer.from_name(model_name)
 
     elif model_type == "mtp":
         if lora_config is None:

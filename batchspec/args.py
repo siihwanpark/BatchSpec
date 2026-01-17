@@ -28,9 +28,9 @@ class CommonArguments:
     tokenizer_path: str = field(
         metadata={"help": "Path to the tokenizer."}
     )
-    backend: Literal["standard", "standalone", "eagle", "mtp"] = field(
+    backend: Literal["standard", "standalone", "eagle", "magicdec", "mtp"] = field(
         default="standard",
-        metadata={"help": "Backend name (standard, eagle, mtp)."}
+        metadata={"help": "Backend name (standard, standalone, eagle, magicdec, mtp)."}
     )
     dataset: str = field(
         default="AIME2025",
@@ -57,6 +57,10 @@ class CommonArguments:
     compile: bool = field(
         default=False,
         metadata={"help": "Enable torch.compile() for the model."}
+    )
+    attn_buffer_size_mb: int = field(
+        default=384,
+        metadata={"help": "Attention buffer size in MB for the attention kernel."}
     )
     
     printoutput: bool = field(
@@ -111,6 +115,7 @@ class SpecDecArguments:
         metadata={"help": "Number of draft tokens to generate in one step."}
     )
 
+
 @dataclass
 class StandaloneArguments:
     """Standalone arguments."""
@@ -127,6 +132,7 @@ class StandaloneArguments:
         metadata={"help": "Use tensor parallelism for standalone drafter module."}
     )
 
+
 @dataclass
 class EAGLEArguments:
     """EAGLE-specific arguments."""
@@ -141,6 +147,19 @@ class EAGLEArguments:
     use_eagle_tp: bool = field(
         default=False,
         metadata={"help": "Use tensor parallelism for EAGLE drafter module."}
+    )
+
+
+@dataclass
+class MagicDecArguments:
+    """MagicDec-specific arguments."""
+    num_sink_tokens: int = field(
+        default=16,
+        metadata={"help": "Number of sink tokens for the MagicDec drafter."}
+    )
+    stream_budget: int = field(
+        default=1024,
+        metadata={"help": "Stream budget for the MagicDec drafter."}
     )
 
 
@@ -285,6 +304,7 @@ def parse_args() -> SimpleNamespace:
         SpecDecArguments,
         StandaloneArguments,
         EAGLEArguments,
+        MagicDecArguments,
         MTPArguments,
         LoRAArguments,
         ProfilerArguments,
@@ -292,9 +312,9 @@ def parse_args() -> SimpleNamespace:
     ))
     
     parsed = parser.parse_args_into_dataclasses()
-    (common, benchmark, sampling, specdec, standalone, eagle, mtp, lora, profiler, distributed) = parsed
+    (common, benchmark, sampling, specdec, standalone, eagle, magicdec, mtp, lora, profiler, distributed) = parsed
     
-    merged = _merge_to_namespace(common, benchmark, sampling, specdec, standalone, eagle, mtp, lora, profiler, distributed)
+    merged = _merge_to_namespace(common, benchmark, sampling, specdec, standalone, eagle, magicdec, mtp, lora, profiler, distributed)
     merged = _postprocess_args(merged)
     
     return merged

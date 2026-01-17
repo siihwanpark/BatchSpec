@@ -84,7 +84,7 @@ class BaseEngine(AttentionWrapperMixin):
         # Initialize KV page table
         self.kv_page_table = PageTable(
             page_size=page_size,
-            max_batch_size=batch_size,
+            batch_size=batch_size,
             max_num_pages_per_request=(max_cache_length + page_size - 1) // page_size,
             device=self.device
         )

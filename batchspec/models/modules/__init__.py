@@ -2,7 +2,8 @@
 
 from .attention import (
     BaseAttention, GatedLoRAAttention,
-    StandardAttention, StandardAttentionWithNonCausalSupport, EAGLEAttention, MTPAttention
+    StandardAttention, StandardAttentionWithNonCausalSupport,
+    EAGLEAttention, MagicDecAttention, MTPAttention,
 )
 from .feedforward import FeedForward, GatedLoRAFeedForward
 from .kv_cache import StandardKVCache, StreamingKVCache
@@ -18,6 +19,7 @@ __all__ = [
     "StandardAttention",
     "StandardAttentionWithNonCausalSupport",
     "EAGLEAttention",
+    "MagicDecAttention",
     "MTPAttention",
     "FeedForward",
     "GatedLoRAFeedForward",

@@ -2,8 +2,9 @@
 
 from .base import BaseAttention, GatedLoRAAttention
 from .standard import StandardAttention, StandardAttentionWithNonCausalSupport
-from .mtp import MTPAttention
 from .eagle import EAGLEAttention
+from .magicdec import MagicDecAttention
+from .mtp import MTPAttention
 
 __all__ = [
     "BaseAttention",
@@ -11,5 +12,6 @@ __all__ = [
     "StandardAttention",
     "StandardAttentionWithNonCausalSupport",
     "EAGLEAttention",
+    "MagicDecAttention",
     "MTPAttention",
 ]
