@@ -46,11 +46,18 @@ class Runner:
             'group': process_group
         }
 
-        if self.args.backend == "eagle":
-            assert self.args.eagle_checkpoint_path is not None, "EAGLE drafter checkpoint path is required for EAGLE backend"
+        if self.args.backend == "standalone":
+            assert self.args.drafter_name is not None and self.args.drafter_checkpoint_path is not None, "Standalone drafter name and checkpoint path are required for Standalone backend"
             load_params.update({
-                'eagle_checkpoint_path': self.args.eagle_checkpoint_path,
+                'drafter_name': self.args.drafter_name,
+                'drafter_checkpoint_path': self.args.drafter_checkpoint_path,
+                'use_drafter_tp': self.args.use_drafter_tp,
+            })
+        elif self.args.backend == "eagle":
+            assert self.args.eagle_name is not None and self.args.eagle_checkpoint_path is not None, "EAGLE drafter name and checkpoint path are required for EAGLE backend"
+            load_params.update({
                 'eagle_name': self.args.eagle_name,
+                'eagle_checkpoint_path': self.args.eagle_checkpoint_path,
                 'use_eagle_tp': self.args.use_eagle_tp,
             })
         elif self.args.backend == "mtp":
@@ -96,9 +103,7 @@ class Runner:
         input_ids = self.batch_sampler.sample_batch().to(self.device)
         
         # Clear the KV cache at the beginning of the run
-        self.engine.kv_page_table.clear_kv(self.engine.model)
-        if self.args.backend == "eagle" and hasattr(self.engine, "eagle_kv_page_table"):
-            self.engine.eagle_kv_page_table.clear_kv(self.engine.model.eagle)
+        self.engine.init_cache()
 
         # Run the benchmark
         for i, prefix_len in enumerate(self.args.prefix_len_list):

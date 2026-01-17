@@ -155,6 +155,11 @@ class MTPEngine(BaseEngine):
                 non_causal_attn_kernel=self.non_causal_attn_wrapper,
             )
 
+    
+    def init_cache(self):
+        """Initialize the KV cache for the MTP model."""
+        self.kv_page_table.clear_kv(self.model)
+    
 
     def compile(self):
         """Enable torch.compile for forward functions.

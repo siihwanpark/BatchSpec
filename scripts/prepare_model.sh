@@ -6,7 +6,7 @@ set -e  # Exit on any error
 # =============================================================================
 
 # Base checkpoint directory (all models will be saved under this directory)
-BASE_CHECKPOINT_DIR="/home/jovyan/sihwan-volume/checkpoints"
+BASE_CHECKPOINT_DIR="/workspace/checkpoints"
 
 # HuggingFace token (replace with your token)
 HF_TOKEN=""
@@ -26,13 +26,13 @@ REPO_IDS=(
     # "Qwen/Qwen3-8B"
     "Qwen/Qwen3-0.6B"
     "Qwen/Qwen3-8B"
-    "Qwen/Qwen3-14B"
-    "Qwen/Qwen3-32B"
-    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
-    "yuhuili/EAGLE3-DeepSeek-R1-Distill-LLaMA-8B"
+    # "Qwen/Qwen3-14B"
+    # "Qwen/Qwen3-32B"
+    # "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+    # "yuhuili/EAGLE3-DeepSeek-R1-Distill-LLaMA-8B"
     "AngelSlim/Qwen3-8B_eagle3"
-    "AngelSlim/Qwen3-14B_eagle3"
-    "AngelSlim/Qwen3-32B_eagle3"
+    # "AngelSlim/Qwen3-14B_eagle3"
+    # "AngelSlim/Qwen3-32B_eagle3"
 )
 
 # =============================================================================

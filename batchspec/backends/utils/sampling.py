@@ -48,7 +48,7 @@ def get_sampling_probs(
     probs = softmax(logits, temperature=temperature)
     
     # Apply top-p filtering
-    if top_p > 0:
+    if top_p > 0 and top_p < 1.0:
         probs = top_p_renorm_probs(probs, top_p)
     
     # Apply top-k filtering

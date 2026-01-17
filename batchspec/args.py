@@ -28,7 +28,7 @@ class CommonArguments:
     tokenizer_path: str = field(
         metadata={"help": "Path to the tokenizer."}
     )
-    backend: Literal["standard", "eagle", "mtp"] = field(
+    backend: Literal["standard", "standalone", "eagle", "mtp"] = field(
         default="standard",
         metadata={"help": "Backend name (standard, eagle, mtp)."}
     )
@@ -85,15 +85,15 @@ class SamplingArguments:
     """Sampling configuration for generation."""
     
     temperature: float = field(
-        default=0.6,
+        default=0.0,
         metadata={"help": "Temperature for sampling. 0 means greedy decoding."}
     )
     top_p: float = field(
-        default=0.95,
+        default=1.0,
         metadata={"help": "Top-p (nucleus) sampling."}
     )
     top_k: int = field(
-        default=20,
+        default=-1,
         metadata={"help": "Top-k sampling."}
     )
     force_budget: bool = field(
@@ -112,9 +112,26 @@ class SpecDecArguments:
     )
 
 @dataclass
+class StandaloneArguments:
+    """Standalone arguments."""
+    drafter_name: str = field(
+        default="Qwen3-0.6B",
+        metadata={"help": "Name of the standalone drafter model."}
+    )
+    drafter_checkpoint_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the standalone drafter checkpoint weights (for standalone backend)."}
+    )
+    use_drafter_tp: bool = field(
+        default=False,
+        metadata={"help": "Use tensor parallelism for standalone drafter module."}
+    )
+
+@dataclass
 class EAGLEArguments:
     """EAGLE-specific arguments."""
     eagle_name: str = field(
+        default="Qwen3-8B_eagle3",
         metadata={"help": "Name of the EAGLE drafter model."}
     )
     eagle_checkpoint_path: Optional[str] = field(
@@ -266,6 +283,7 @@ def parse_args() -> SimpleNamespace:
         BenchmarkArguments,
         SamplingArguments,
         SpecDecArguments,
+        StandaloneArguments,
         EAGLEArguments,
         MTPArguments,
         LoRAArguments,
@@ -274,9 +292,9 @@ def parse_args() -> SimpleNamespace:
     ))
     
     parsed = parser.parse_args_into_dataclasses()
-    (common, benchmark, sampling, specdec, eagle, mtp, lora, profiler, distributed) = parsed
+    (common, benchmark, sampling, specdec, standalone, eagle, mtp, lora, profiler, distributed) = parsed
     
-    merged = _merge_to_namespace(common, benchmark, sampling, specdec, eagle, mtp, lora, profiler, distributed)
+    merged = _merge_to_namespace(common, benchmark, sampling, specdec, standalone, eagle, mtp, lora, profiler, distributed)
     merged = _postprocess_args(merged)
     
     return merged

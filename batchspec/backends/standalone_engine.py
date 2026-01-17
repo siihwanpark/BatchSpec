@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Optional
 
 import torch
-import flashinfer
 from torch import Tensor
 from transformers import PreTrainedTokenizer
 from flashinfer.sampling import chain_speculative_sampling
@@ -14,11 +13,8 @@ from .utils import sample, apply_tp, get_sampling_probs
 from batchspec.profiler import get_active_profiler, cpu_bucket_timer
 from batchspec.models import get_model
 
-class EAGLEChainEngine(BaseEngine):
-    """Chain speculative decoding mode EAGLE backend engine for autoregressive generation.
-    
-    Supports prefill and decode phases with FlashInfer attention in chain mode.
-    """
+class StandaloneEngine(BaseEngine):
+    """Backend engine for speculative decoding with standalone drafter."""
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -32,11 +28,11 @@ class EAGLEChainEngine(BaseEngine):
     def load_model(
         self,
         model_name: str,
-        eagle_name: str,
+        drafter_name: str,
         checkpoint_path: Path,
-        eagle_checkpoint_path: Path,
+        drafter_checkpoint_path: Path,
         use_tp: bool = False,
-        use_eagle_tp: bool = False,
+        use_drafter_tp: bool = False,
         rank_group = None,
         group = None
     ):
@@ -44,38 +40,41 @@ class EAGLEChainEngine(BaseEngine):
         
         Args:
             model_name: Name of model configuration
-            eagle_name: Name of EAGLE module configuration
+            drafter_name: Name of drafter model configuration
             checkpoint_path: Path to target model checkpoint
-            eagle_checkpoint_path: Path to EAGLE module checkpoint
+            drafter_checkpoint_path: Path to drafter module checkpoint
             use_tp: Whether to use tensor parallelism
-            use_eagle_tp: Whether to use tensor parallelism for EAGLE module (If set to True, EAGLE shares the same rank group with target model)
+            use_drafter_tp: Whether to use tensor parallelism for drafter module (If set to True, drafter shares the same rank group with target model)
             rank_group: Rank group for TP
             group: Process group for distributed training
         """
         # Load model on meta device first
         with torch.device('meta'):
-            model = get_model(model_name, "eagle", drafter_name=eagle_name)
+            model = get_model(model_name, "standard")
+            drafter = get_model(drafter_name, "standard")
         
         # Load checkpoint
         checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
-        model.load_state_dict(checkpoint, assign=True, strict=False)
+        model.load_state_dict(checkpoint, assign=True, strict=True)
 
-        eagle_checkpoint = torch.load(str(eagle_checkpoint_path), mmap=True, weights_only=True)
-        model.eagle.load_state_dict(eagle_checkpoint, assign=True, strict=True)
+        drafter_checkpoint = torch.load(str(drafter_checkpoint_path), mmap=True, weights_only=True)
+        drafter.load_state_dict(drafter_checkpoint, assign=True, strict=True)
 
         # Apply tensor parallelism if requested
         if use_tp:
-            print("Applying tensor parallel to model...")
+            print("Applying tensor parallel to target model...")
             apply_tp(model, rank_group, group=group)
         
-        if use_eagle_tp:
-            raise NotImplementedError("Tensor parallelism for EAGLE module is not implemented yet")
-            # print("Applying tensor parallel to EAGLE module...")
-            # apply_tp_eagle(model.eagle, rank_group, group=group)
+        if use_drafter_tp:
+            print("Applying tensor parallel to drafter model...")
+            apply_tp(drafter, rank_group, group=group)
         
         # Move to device and set to eval mode
         model = model.to(device=self.device, dtype=self.dtype)
+        drafter = drafter.to(device=self.device, dtype=self.dtype)
+        
         self.model = model.eval()
+        self.drafter = drafter.eval()
     
     def setup_caches(
         self,
@@ -101,16 +100,16 @@ class EAGLEChainEngine(BaseEngine):
         max_cachelen = max_seq_length + self.draft_length + 1
         super().setup_caches(batch_size, max_cachelen, page_size, prefill_chunk_size)
 
-        # Create target attention wrapper (causal attention kernel)
+        # Create target attention wrapper
         self.target_attn_buffer = self._create_attention_buffer(attn_buffer_size_mb)
         self.target_attn_wrapper = self._create_attention_wrapper(batch_size, self.target_attn_buffer)
         
-        # Create EAGLE attention wrapper (causal attention kernel)
-        self.eagle_attn_buffer = self._create_attention_buffer(attn_buffer_size_mb)
-        self.eagle_attn_wrapper = self._create_attention_wrapper(batch_size, self.eagle_attn_buffer)
+        # Create drafter attention wrapper
+        self.drafter_attn_buffer = self._create_attention_buffer(attn_buffer_size_mb)
+        self.drafter_attn_wrapper = self._create_attention_wrapper(batch_size, self.drafter_attn_buffer)
         
-        # Create EAGLE KV Page Table
-        self.eagle_kv_page_table = PageTable(
+        # Create drafter KV Page Table
+        self.drafter_kv_page_table = PageTable(
             page_size=page_size,
             max_batch_size=batch_size,
             max_num_pages_per_request=(max_cachelen + page_size - 1) // page_size,
@@ -119,58 +118,55 @@ class EAGLEChainEngine(BaseEngine):
 
         # Setup model caches
         target_max_num_pages = self.kv_page_table.max_num_pages_per_request * batch_size
-        eagle_max_num_pages = self.eagle_kv_page_table.max_num_pages_per_request * batch_size
+        drafter_max_num_pages = self.drafter_kv_page_table.max_num_pages_per_request * batch_size
         with torch.device(self.device):
             self.model.setup_caches(
-                target_num_pages=target_max_num_pages,
-                eagle_num_pages=eagle_max_num_pages,
+                num_pages=target_max_num_pages,
                 page_size=page_size,
-                causal_attn_kernel=self.target_attn_wrapper,
-                eagle_attn_kernel=self.eagle_attn_wrapper,
+                attn_kernel=self.target_attn_wrapper,
+            )
+
+            self.drafter.setup_caches(
+                num_pages=drafter_max_num_pages,
+                page_size=page_size,
+                attn_kernel=self.drafter_attn_wrapper,
             )
 
 
     def init_cache(self):
-        """Initialize the KV cache for the target and EAGLE models."""
+        """Initialize the KV cache for the target and drafter models."""
         self.kv_page_table.clear_kv(self.model)
-        self.eagle_kv_page_table.clear_kv(self.model.eagle)
-
-
-    def setup_special_tokens(self):
-        """Setup special tokens."""
-        super().setup_special_tokens()
-        self.draft_eos_token_id = self.model.eagle.convert_target_to_draft(self.eos_token_id)
+        self.drafter_kv_page_table.clear_kv(self.drafter)
         
 
     def compile(self):
         """Enable torch.compile for forward functions."""
         super().compile()
-        self.forward = torch.compile(self.forward)
-        self.eagle_forward = torch.compile(self.eagle_forward)
+        self.target_forward = torch.compile(self.target_forward)
+        self.drafter_forward = torch.compile(self.drafter_forward)
 
 
-    def target_forward(self, input_ids: Tensor) -> tuple[Tensor, Tensor]:
+    def target_forward(self, input_ids: Tensor) -> Tensor:
         """Single step forward through target model.
         
         Args:
             input_ids: Input token IDs [bsz, seq_len]
         Returns:
-            Logits of shape (bsz, seq_len, target_vocab_size), Hidden states of shape (bsz, seq_len, hidden_size)
+            Logits of shape (bsz, seq_len, target_vocab_size)
         """
         bsz, seq_len = input_ids.shape
         qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * seq_len
-        position_ids = (self.kv_page_table.cachelens[:, None] + torch.arange(seq_len, device=self.device)[None, :]).flatten()
 
         self.pre_target_forward(qo_indptr)
         with torch.inference_mode():
-            output = self.model(
+            logits = self.model(
                 input_ids=input_ids,
-                position_ids=position_ids,
+                position_offsets=self.kv_page_table.cachelens,
                 qo_indptr=qo_indptr,
                 kv_page_table=self.kv_page_table,
-            ) # [bsz, seq_len, target_vocab_size], [bsz, seq_len, hidden_size]
+            ) # [bsz, seq_len, target_vocab_size]
         
-        return output
+        return logits
 
 
     def pre_target_forward(self, qo_indptr: Tensor):
@@ -190,43 +186,40 @@ class EAGLEChainEngine(BaseEngine):
         )
 
 
-    def eagle_forward(self, input_ids: Tensor, hidden_states: Tensor) -> tuple[Tensor, Tensor]:
-        """Single step forward through EAGLE module.
+    def drafter_forward(self, input_ids: Tensor) -> Tensor:
+        """Single step forward through drafter model.
         
         Args:
             input_ids: Input token IDs [bsz, seq_len]
-            hidden_states: Hidden states from target model [bsz, seq_len, hidden_size]
         Returns:
-            Logits of shape (bsz, seq_len, draft_vocab_size), Hidden states of shape (bsz, seq_len, hidden_size)
+            Logits of shape (bsz, seq_len, vocab_size)
         """
         bsz, seq_len = input_ids.shape
         qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * seq_len
-        position_ids = (self.eagle_kv_page_table.cachelens[:, None] + torch.arange(seq_len, device=self.device)[None, :]).flatten()
 
-        self.pre_eagle_forward(qo_indptr)
+        self.pre_drafter_forward(qo_indptr)
         with torch.inference_mode():
-            output = self.model.eagle_forward(
+            logits = self.drafter(
                 input_ids=input_ids,
-                hidden_states=hidden_states,
+                position_offsets=self.drafter_kv_page_table.cachelens,
                 qo_indptr=qo_indptr,
-                position_ids=position_ids,
-                kv_page_table=self.eagle_kv_page_table,
-            ) # [bsz, seq_len, draft_vocab_size], [bsz, seq_len, hidden_size]
+                kv_page_table=self.drafter_kv_page_table,
+            ) # [bsz, seq_len, vocab_size]
         
-        return output
+        return logits
 
 
-    def pre_eagle_forward(self, qo_indptr: Tensor):
+    def pre_drafter_forward(self, qo_indptr: Tensor):
         """Prepare for EAGLE forward step."""
-        self.eagle_kv_page_table.insert_kv(qo_indptr[1:] - qo_indptr[:-1]) # insert KV cache for the new tokens
-        self.eagle_attn_wrapper.plan(
+        self.drafter_kv_page_table.insert_kv(qo_indptr[1:] - qo_indptr[:-1]) # insert KV cache for the new tokens
+        self.drafter_attn_wrapper.plan(
             qo_indptr=qo_indptr,
-            paged_kv_indptr=self.eagle_kv_page_table.paged_kv_indptr,
-            paged_kv_indices=self.eagle_kv_page_table.paged_kv_indices,
-            paged_kv_last_page_len=self.eagle_kv_page_table.paged_kv_last_page_len,
-            num_qo_heads=self.model.eagle.config.n_head,
-            num_kv_heads=self.model.eagle.config.n_local_heads,
-            head_dim_qk=self.model.eagle.config.head_dim,
+            paged_kv_indptr=self.drafter_kv_page_table.paged_kv_indptr,
+            paged_kv_indices=self.drafter_kv_page_table.paged_kv_indices,
+            paged_kv_last_page_len=self.drafter_kv_page_table.paged_kv_last_page_len,
+            num_qo_heads=self.drafter.config.n_head,
+            num_kv_heads=self.drafter.config.n_local_heads,
+            head_dim_qk=self.drafter.config.head_dim,
             page_size=self.page_size,
             q_data_type=self.dtype,
             causal=True,
@@ -253,49 +246,37 @@ class EAGLEChainEngine(BaseEngine):
             chunk_input_ids = input_ids[:, start_idx:end_idx]
             
             # Target prefill
-            logits, hidden_states = self.target_forward(chunk_input_ids)
+            logits = self.target_forward(chunk_input_ids)
             
-            # EAGLE prefill
-            # Shift input_ids to left by 1 token for EAGLE prefill
-            if end_idx < seq_len:
-                eagle_input_ids = input_ids[:, start_idx+1:end_idx+1]
-                self.eagle_forward(eagle_input_ids, hidden_states)
-            else:
-                # For the last chunk, we drop the last hidden_states to match the input_ids length
-                eagle_input_ids = input_ids[:, start_idx+1:seq_len]
-                self.eagle_forward(eagle_input_ids, hidden_states[:, :-1])
+            # Drafter prefill
+            self.drafter_forward(chunk_input_ids)
             
-        return (
-            sample(logits[:, -1], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature),
-            hidden_states[:, -1:]
-        )
+        return sample(logits[:, -1], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
 
 
-    def draft(self, input_ids: Tensor, hidden_states: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def draft(self, input_ids: Tensor) -> Tensor:
         """Execute the draft step and return the next token predictions.
         
         Args:
             input_ids: Input token IDs [bsz, seq_len]
-            hidden_states: Hidden states from target model [bsz, seq_len, hidden_size]
         Returns:
-            Next token predictions [bsz, 1]
+            Logits of shape (bsz, seq_len, vocab_size)
         """
         _, seq_len = input_ids.shape
         assert seq_len == 1 or seq_len == 2, f"The input length must be 1 or 2 for draft, but got {seq_len}"
 
-        logits, hidden_states = self.eagle_forward(input_ids, hidden_states)
+        logits = self.drafter_forward(input_ids)
         draft_tokens = sample(logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
-        draft_tokens = self.model.eagle.convert_draft_to_target(draft_tokens)
 
-        return draft_tokens, logits, hidden_states
+        return draft_tokens, logits
 
 
     def generate_batch(self, input_ids, max_gen_len: int, prefix_len: int):
         """
-        Generate a batch of tokens using the EAGLE chain speculative decoding.
+        Generate a batch of tokens using the standalone speculative decoding.
         
         If the force_budget is not set, the generation will terminate whenever at least one EOS token is generated.
-        Otherwise, the generation will proceed until the budget is exhausted by replacing </think> tokens to 'Wait' or 'Alternatively'.
+        Otherwise, the generation will proceed until the budget is exhausted by replacing </think> or EOS tokens to 'Wait' or 'Alternatively'.
         
         Args:
             input_ids: [bsz, seq_len]
@@ -317,11 +298,8 @@ class EAGLEChainEngine(BaseEngine):
         force_budget = self.force_budget
         eos_token_id = self.eos_token_id
         greedy = self.greedy
-        draft_vocab_size = self.model.eagle.config.draft_vocab_size
+        vocab_size = self.model.config.vocab_size
 
-        # Transformation between target and draft vocabularies
-        target_to_draft = self.model.eagle.target_to_draft
-        
         # Define local variables
         model_steps = 0
         num_generated_tokens = torch.zeros(bsz, device=device, dtype=torch.int32)
@@ -330,15 +308,15 @@ class EAGLEChainEngine(BaseEngine):
         output = torch.zeros(bsz, max_gen_len * 3, device=device, dtype=torch.long)
         
         tokens_buffer = torch.zeros(bsz, 1+k, device=device, dtype=torch.long) # one is the prev step's next token, k for draft tokens
-        logits_buffer = torch.zeros(bsz, k, draft_vocab_size, device=device, dtype=dtype) if not greedy else None
+        logits_buffer = torch.zeros(bsz, k, vocab_size, device=device, dtype=dtype) if not greedy else None
         
         # Prefill
-        next_tokens, hidden_states = self.prefill(input_ids)
+        next_tokens = self.prefill(input_ids)
         tokens_buffer[:, :1] = next_tokens
 
         # SANITY CHECK: The KV cache length must be equal to the prefix length
         assert torch.all(self.kv_page_table.cachelens == prefix_len), "The target model's KV cache length must be equal to the prefix length"
-        assert torch.all(self.eagle_kv_page_table.cachelens == prefix_len-1), "The drafter's KV cache length must be equal to the prefix length minus 1"
+        assert torch.all(self.drafter_kv_page_table.cachelens == prefix_len), "The drafter's KV cache length must be equal to the prefix length"
 
         # Initialize the profiler (NullProfiler when profiling=False)
         profiler = get_active_profiler()
@@ -350,63 +328,54 @@ class EAGLEChainEngine(BaseEngine):
             with profiler.step_timing_ctx():
                 profiler.set_step_seq_len(self.kv_page_table.cachelens)
         
-                # EAGLE Chain Draft
+                # Standalone Draft
                 # First draft, we need to handle the double buffer case
                 if use_double_buffer:
                     pad_len = (~full_accept_mask).int() # indicate the padding length for the double buffer (0 for full accept sequences, 1 for others)
-                    double_draft_tokens, double_draft_logits, double_hidden_states = self.draft(double_buffer, hidden_states)
-                    self.eagle_kv_page_table.delete_kv(pad_len) # delete the KV cache for the padded tokens
+                    double_draft_tokens, double_draft_logits = self.draft(double_buffer)
+                    self.drafter_kv_page_table.delete_kv(pad_len) # delete the KV cache for the padded tokens
 
                     draft_tokens = double_draft_tokens[batch_indices, pad_len-1][:, None]
-                    hidden_states = double_hidden_states[batch_indices, pad_len-1][:, None]
-                    
                     tokens_buffer[:, 1:2] = draft_tokens
                     if not greedy: logits_buffer[:, 0] = double_draft_logits[batch_indices, pad_len-1]
                     use_double_buffer = False
                 else:
-                    draft_tokens, draft_logits, hidden_states = self.draft(tokens_buffer[:, :1], hidden_states)
+                    draft_tokens, draft_logits = self.draft(tokens_buffer[:, :1])
                     tokens_buffer[:, 1:2] = draft_tokens
                     if not greedy: logits_buffer[:, :1] = draft_logits
 
                 # Subsequent drafts
                 for i in range(1, k):
-                    draft_tokens, draft_logits, hidden_states = self.draft(tokens_buffer[:, i:i+1], hidden_states)
+                    draft_tokens, draft_logits = self.draft(tokens_buffer[:, i:i+1])
                     tokens_buffer[:, i+1:i+2] = draft_tokens
                     if not greedy: logits_buffer[:, i:i+1] = draft_logits
 
                 # Target verification
-                target_logits, hidden_states = self.target_forward(tokens_buffer)
+                target_logits = self.target_forward(tokens_buffer)
 
                 # Evaluate the posterior
                 if greedy:
                     bonus_tokens, accept_nums, eos_accepted = self.evaluate_posterior(tokens_buffer[:, 1:], target_logits.argmax(dim=-1))
                 else:
-                    # ========== Use Draft Vocabulary ===========
-                    # Project the target logits to the draft vocabulary
-                    target_logits = target_logits[..., target_to_draft] # [bsz, k+1, draft_vocab_size]
-                    draft_tokens = self.model.eagle.convert_target_to_draft(tokens_buffer[:, 1:]) # [bsz, k]
-
-                    bonus_tokens, accept_nums, eos_accepted = self.evaluate_posterior(draft_tokens, target_logits, logits_buffer)
-                    # ==== Convert back to Target Vocabulary ====
-                    bonus_tokens = self.model.eagle.convert_draft_to_target(bonus_tokens) # [bsz, 1]
+                    bonus_tokens, accept_nums, eos_accepted = self.evaluate_posterior(tokens_buffer[:, 1:], target_logits, logits_buffer)
                 
                 # Force budget
                 if force_budget:
                     bonus_tokens, accept_nums = self.budget_forcing(tokens_buffer[:, 1:], bonus_tokens, accept_nums)
-                
+
                 # Register accept_nums to Profiler
                 profiler.set_step_tokens(int(accept_nums.sum().item()))
 
                 # Delete the KV cache for the rejected tokens
                 # Note that the drafter's KV cache follows the target model's KV cache with a delay of 1 token.
                 self.kv_page_table.delete_kv((k+1) - accept_nums)
-                self.eagle_kv_page_table.delete_kv(torch.clamp(k - accept_nums, min=0))
+                self.drafter_kv_page_table.delete_kv(torch.clamp(k - accept_nums, min=0))
                 
                 # SANITY CHECK: The KV cache delay must be 1 for the partially accepted sequences, and 2 for the fully accepted sequences.
-                kv_cache_delay = self.kv_page_table.cachelens - self.eagle_kv_page_table.cachelens
+                kv_cache_delay = self.kv_page_table.cachelens - self.drafter_kv_page_table.cachelens
                 full_accept_mask = (accept_nums == k+1)
-                assert torch.all(kv_cache_delay[~full_accept_mask] == 1), f"The KV cache delay must be 1 for the partially accepted sequences, but got {kv_cache_delay[~full_accept_mask]}"
-                assert torch.all(kv_cache_delay[full_accept_mask] == 2), f"The KV cache delay must be 2 for the fully accepted sequences, but got {kv_cache_delay[full_accept_mask]}"
+                assert torch.all(kv_cache_delay[~full_accept_mask] == 0), f"The KV cache delay must be 0 for the partially accepted sequences, but got {kv_cache_delay[~full_accept_mask]}"
+                assert torch.all(kv_cache_delay[full_accept_mask] == 1), f"The KV cache delay must be 1 for the fully accepted sequences, but got {kv_cache_delay[full_accept_mask]}"
 
                 # Update output
                 write_indices = num_generated_tokens[:, None] + torch.arange(k + 1, device=device)[None, :] # [B, k+1]
@@ -425,20 +394,11 @@ class EAGLEChainEngine(BaseEngine):
                         Thus, we need to use the double token buffer to handle this case."""
                     
                     use_double_buffer = True
-                    double_buffer = torch.zeros((bsz, 2), device=device, dtype=torch.long)
-                    
                     full_accept_mask = (accept_nums == k+1)
                     double_buffer = torch.stack([
                         torch.where(full_accept_mask, tokens_buffer[:, -1], bonus_tokens[:, 0]),
                         torch.where(full_accept_mask, bonus_tokens[:, 0], 0),
                     ], dim=1)
-
-                    hidden_states = torch.stack([
-                        hidden_states[batch_indices, accept_nums-1-full_accept_mask.int()],
-                        hidden_states[batch_indices, accept_nums-1],
-                    ], dim=1)
-                else:
-                    hidden_states = hidden_states[batch_indices, accept_nums-1][:, None]
                 
                 # Check the terminal condition
                 eos_accepted_or_generated = eos_accepted | (tokens_buffer[:, 0] == eos_token_id)
@@ -450,11 +410,11 @@ class EAGLEChainEngine(BaseEngine):
         
         profiler.end_run()
         self.kv_page_table.delete_kv(num_generated_tokens) # revert the KV cache to proceed next run with longer prefix
-        self.eagle_kv_page_table.delete_kv(self.eagle_kv_page_table.cachelens - prefix_len) # revert the drafter's KV cache to proceed next run with longer prefix
+        self.drafter_kv_page_table.delete_kv(self.drafter_kv_page_table.cachelens - prefix_len) # revert the drafter's KV cache to proceed next run with longer prefix
         
         # SANITY CHECK: The KV cache length must be equal to the prefix length
         assert torch.all(self.kv_page_table.cachelens == prefix_len), "The target model's KV cache length must be equal to the prefix length"
-        assert torch.all(self.eagle_kv_page_table.cachelens == prefix_len), "The drafter's KV cache length must be equal to the prefix length"
+        assert torch.all(self.drafter_kv_page_table.cachelens == prefix_len), "The drafter's KV cache length must be equal to the prefix length"
 
         return output, num_generated_tokens, model_steps
 
@@ -502,10 +462,10 @@ class EAGLEChainEngine(BaseEngine):
             draft_probs = get_sampling_probs(draft_logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
             output_tokens, _, emitted_nums = chain_speculative_sampling(draft_probs, draft_tokens, target_probs)
             accept_nums = emitted_nums + 1
-            
+
             last_valid_idx = ((output_tokens != -1).to(torch.long) * torch.arange(output_tokens.size(1), device=output_tokens.device)).argmax(dim=1, keepdim=True)
             bonus_tokens = output_tokens.gather(1, last_valid_idx)
-            eos_accepted = (self.draft_eos_token_id == output_tokens).any(dim=1, keepdim=True)
+            eos_accepted = (self.eos_token_id == output_tokens).any(dim=1, keepdim=True)
             return bonus_tokens, accept_nums, eos_accepted
     
     

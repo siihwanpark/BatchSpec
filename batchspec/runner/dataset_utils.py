@@ -29,7 +29,7 @@ PROMPT_KEY_DICT = {
 }
 
 BENCHMARK_DATASET_PATH_DICT = {
-    "Qwen3-8B": "/workspace/BatchSpec/batchspec/benchmark_data/responses_Qwen3-8B/",
+    "Qwen3-8B": "/workspace/BatchSpec/benchmark_data/",
     "DeepSeek-R1-Distill-Llama-8B": "/workspace/BatchSpec/batchspec/benchmark_data/responses_DSL-8B/"
 }
 
