@@ -1,7 +1,4 @@
-"""MTP (Multi-Token Prediction) engine for self-speculative decoding.
-
-This engine implements self-speculative decoding with LoRA and gated sampling.
-"""
+"""MTP backend engine for self-speculative decoding with multi-token prediction."""
 
 from typing import Optional
 from pathlib import Path
@@ -18,7 +15,7 @@ from batchspec.profiler import get_active_profiler, cpu_bucket_timer
 
 
 class MTPEngine(BaseEngine):
-    """MTP engine for self-speculative decoding with multi-token prediction.
+    """MTP backend engine for self-speculative decoding with multi-token prediction.
     
     Key features:
     - LoRA supported
@@ -465,7 +462,8 @@ class MTPEngine(BaseEngine):
             if (not force_budget) and (tokens_buffer[:, 0] == eos_token_id).any(): terminal = True
         
         profiler.end_run()
-        self.kv_page_table.delete_kv(num_generated_tokens) # revert the KV cache to proceed next run with longer prefix
+        self.kv_page_table.delete_kv(self.kv_page_table.cachelens - prefix_len) # revert the KV cache to proceed next run with longer prefix
+        assert torch.all(self.kv_page_table.cachelens == prefix_len), "The KV cache length must be equal to the prefix length"
 
         return output, num_generated_tokens, model_steps
 

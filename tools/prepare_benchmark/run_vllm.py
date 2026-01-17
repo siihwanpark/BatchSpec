@@ -10,10 +10,7 @@ Usage:
         --output_dir data/responses --outfile_suffix responses
 """
 
-
-import os
 import ast
-import sys
 import time
 import json
 import random
@@ -21,7 +18,6 @@ import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams

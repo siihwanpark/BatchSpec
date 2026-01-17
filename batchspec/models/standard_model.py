@@ -1,6 +1,6 @@
 """Standard transformer implementation."""
 
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import torch
 from torch import Tensor
@@ -15,8 +15,6 @@ if TYPE_CHECKING:
 
 class StandardTransformer(BaseTransformer):
     """Standard transformer model for autoregressive generation.
-    
-    Supports prefill, verify, and decode attention patterns.
     
     Args:
         config: Model configuration

@@ -1,7 +1,7 @@
 """Base transformer classes."""
 
 from abc import ABC, abstractmethod
-from typing import Optional, Type, Any
+from typing import Optional, Type
 
 import torch
 import torch.nn as nn

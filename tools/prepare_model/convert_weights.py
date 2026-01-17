@@ -9,7 +9,6 @@ This module handles:
 
 import re
 import shutil
-import sys
 from pathlib import Path
 from typing import Dict, Optional
 

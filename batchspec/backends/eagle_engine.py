@@ -1,10 +1,9 @@
-"""Standard backend engine for autoregressive generation."""
+"""EAGLE backend engine for speculative decoding with chain drafting."""
 
 from pathlib import Path
 from typing import Optional
 
 import torch
-import flashinfer
 from torch import Tensor
 from transformers import PreTrainedTokenizer
 from flashinfer.sampling import chain_speculative_sampling
@@ -15,10 +14,7 @@ from batchspec.profiler import get_active_profiler, cpu_bucket_timer
 from batchspec.models import get_model
 
 class EAGLEChainEngine(BaseEngine):
-    """Chain speculative decoding mode EAGLE backend engine for autoregressive generation.
-    
-    Supports prefill and decode phases with FlashInfer attention in chain mode.
-    """
+    """EAGLE backend engine for speculative decoding with chain drafting."""
     def __init__(
         self,
         tokenizer: PreTrainedTokenizer,
@@ -68,7 +64,7 @@ class EAGLEChainEngine(BaseEngine):
             print("Applying tensor parallel to model...")
             apply_tp(model, rank_group, group=group)
         
-        if use_eagle_tp:
+        if use_tp and use_eagle_tp:
             raise NotImplementedError("Tensor parallelism for EAGLE module is not implemented yet")
             # print("Applying tensor parallel to EAGLE module...")
             # apply_tp_eagle(model.eagle, rank_group, group=group)
@@ -449,7 +445,7 @@ class EAGLEChainEngine(BaseEngine):
                     num_generated_tokens += 1
         
         profiler.end_run()
-        self.kv_page_table.delete_kv(num_generated_tokens) # revert the KV cache to proceed next run with longer prefix
+        self.kv_page_table.delete_kv(self.kv_page_table.cachelens - prefix_len) # revert the KV cache to proceed next run with longer prefix
         self.eagle_kv_page_table.delete_kv(self.eagle_kv_page_table.cachelens - prefix_len) # revert the drafter's KV cache to proceed next run with longer prefix
         
         # SANITY CHECK: The KV cache length must be equal to the prefix length

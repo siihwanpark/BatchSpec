@@ -1,4 +1,4 @@
-"""Standard backend engine for autoregressive generation."""
+"""Standalone backend engine for speculative decoding with standalone drafter."""
 
 from pathlib import Path
 from typing import Optional
@@ -65,7 +65,7 @@ class StandaloneEngine(BaseEngine):
             print("Applying tensor parallel to target model...")
             apply_tp(model, rank_group, group=group)
         
-        if use_drafter_tp:
+        if use_tp and use_drafter_tp:
             print("Applying tensor parallel to drafter model...")
             apply_tp(drafter, rank_group, group=group)
         
@@ -411,7 +411,7 @@ class StandaloneEngine(BaseEngine):
                     num_generated_tokens += 1
         
         profiler.end_run()
-        self.kv_page_table.delete_kv(num_generated_tokens) # revert the KV cache to proceed next run with longer prefix
+        self.kv_page_table.delete_kv(self.kv_page_table.cachelens - prefix_len) # revert the KV cache to proceed next run with longer prefix
         self.drafter_kv_page_table.delete_kv(self.drafter_kv_page_table.cachelens - prefix_len) # revert the drafter's KV cache to proceed next run with longer prefix
         
         # SANITY CHECK: The KV cache length must be equal to the prefix length

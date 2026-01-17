@@ -1,12 +1,9 @@
 """Standard backend engine for autoregressive generation."""
 
 from pathlib import Path
-from typing import List
 
 import torch
-import flashinfer
 from torch import Tensor
-from transformers import PreTrainedTokenizer
 
 from .base import BaseEngine
 from .utils import sample, apply_tp
@@ -14,10 +11,7 @@ from batchspec.profiler import get_active_profiler, cpu_bucket_timer
 from batchspec.models import get_model
 
 class StandardEngine(BaseEngine):
-    """Standard backend engine for autoregressive generation.
-    
-    Supports prefill and decode phases with FlashInfer attention.
-    """
+    """Standard backend engine for autoregressive generation."""
 
     def load_model(
         self,
@@ -201,7 +195,7 @@ class StandardEngine(BaseEngine):
 
         force_budget = self.force_budget
         eos_token_id = self.eos_token_id
-        suppress_token_id = self.suppress_token_id
+        suppress_token_ids = self.suppress_token_ids
         replace_token_ids = self.replace_token_ids
         
         # Define local variables
@@ -228,8 +222,11 @@ class StandardEngine(BaseEngine):
                 
             # Force budget
             if force_budget:
-                replace_mask = (next_tokens[:, 0] == suppress_token_id)
-                next_tokens[replace_mask, 0] = replace_token_ids[torch.randint(0, replace_token_ids.shape[0], (replace_mask.sum(),), device=self.device)]
+                replace_mask = torch.isin(next_tokens[:, 0], suppress_token_ids)
+                num_replace = replace_mask.sum().item()
+                if num_replace > 0:
+                    rand_idx = torch.randint(0, replace_token_ids.shape[0], (num_replace,), device=self.device)
+                    next_tokens[replace_mask, 0] = replace_token_ids[rand_idx]
 
             # Update output
             output[:, num_generated_tokens+1] = next_tokens[:, 0]
@@ -239,7 +236,9 @@ class StandardEngine(BaseEngine):
             if (not force_budget) and (next_tokens[:, 0] == eos_token_id).any(): terminal = True
         
         profiler.end_run()
-        self.kv_page_table.delete_kv(num_generated_tokens) # revert the KV cache to proceed next run with longer prefix
+        self.kv_page_table.delete_kv(self.kv_page_table.cachelens - prefix_len) # revert the KV cache to proceed next run with longer prefix
+        assert torch.all(self.kv_page_table.cachelens == prefix_len), "The KV cache length must be equal to the prefix length"
+
         num_generated_tokens = torch.full((bsz,), num_generated_tokens, device=device, dtype=torch.int32)
 
         return output, num_generated_tokens, model_steps

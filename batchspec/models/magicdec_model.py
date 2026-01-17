@@ -1,4 +1,6 @@
-from typing import Any, Optional, TYPE_CHECKING
+"""MagicDec transformer implementation with StreamingLLM drafter."""
+
+from typing import Any, TYPE_CHECKING
 
 import torch
 from torch import Tensor
@@ -12,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class MagicDecTransformer(BaseTransformer):
-    """MagicDec transformer model for speculative decoding via MagicDec with StreamingLLM drafter."""
+    """Transformer model for speculative decoding via MagicDec with StreamingLLM drafter."""
     
     def __init__(self, config: ModelArgs):
         super().__init__(config)

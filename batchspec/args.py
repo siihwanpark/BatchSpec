@@ -6,7 +6,6 @@ Common arguments are shared across run_benchmark.py and run_e2e.py.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List, Literal
@@ -128,7 +127,7 @@ class StandaloneArguments:
         metadata={"help": "Path to the standalone drafter checkpoint weights (for standalone backend)."}
     )
     use_drafter_tp: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Use tensor parallelism for standalone drafter module."}
     )
 
@@ -145,7 +144,7 @@ class EAGLEArguments:
         metadata={"help": "Path to the EAGLE drafter checkpoint weights (for EAGLE backend)."}
     )
     use_eagle_tp: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Use tensor parallelism for EAGLE drafter module."}
     )
 
@@ -171,15 +170,6 @@ class MTPArguments:
         default=None,
         metadata={"help": "Path to the LoRA checkpoint weights (for MTP backend)."}
     )
-
-
-@dataclass
-class LoRAArguments:
-    """LoRA configuration arguments.
-    
-    These map directly to LoRAConfig dataclass.
-    """
-    
     lora_rank: int = field(
         default=16,
         metadata={"help": "Rank for the LoRA adapter."}
@@ -187,14 +177,6 @@ class LoRAArguments:
     lora_alpha: float = field(
         default=32.0,
         metadata={"help": "Alpha for the LoRA adapter."}
-    )
-    lora_bias: bool = field(
-        default=False,
-        metadata={"help": "Enable bias for the LoRA adapter."}
-    )
-    lora_use_rslora: bool = field(
-        default=False,
-        metadata={"help": "Use RSLoRA for the LoRA adapter."}
     )
 
 
@@ -306,15 +288,14 @@ def parse_args() -> SimpleNamespace:
         EAGLEArguments,
         MagicDecArguments,
         MTPArguments,
-        LoRAArguments,
         ProfilerArguments,
         DistributedArguments,
     ))
     
     parsed = parser.parse_args_into_dataclasses()
-    (common, benchmark, sampling, specdec, standalone, eagle, magicdec, mtp, lora, profiler, distributed) = parsed
+    (common, benchmark, sampling, specdec, standalone, eagle, magicdec, mtp, profiler, distributed) = parsed
     
-    merged = _merge_to_namespace(common, benchmark, sampling, specdec, standalone, eagle, magicdec, mtp, lora, profiler, distributed)
+    merged = _merge_to_namespace(common, benchmark, sampling, specdec, standalone, eagle, magicdec, mtp, profiler, distributed)
     merged = _postprocess_args(merged)
     
     return merged

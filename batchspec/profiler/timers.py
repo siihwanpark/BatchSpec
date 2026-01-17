@@ -1,7 +1,6 @@
 """Timer contexts and global profiler access."""
 
 import time
-from typing import Optional, Any
 import torch
 
 

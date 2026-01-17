@@ -1,9 +1,8 @@
-"""Standard attention implementation."""
+"""MagicDec attention implementation."""
 
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import torch
-import torch.distributed as dist
 from torch import Tensor
 
 from .base import BaseAttention
@@ -15,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class MagicDecAttention(BaseAttention):
-    """Attention for MagicDec with StreamingLLM drafter.
+    """Attention implementation for MagicDec with StreamingLLM drafter.
     
     Args:
         config: Model configuration

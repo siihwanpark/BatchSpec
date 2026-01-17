@@ -1,6 +1,6 @@
 """Model configuration registry."""
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from .model_config import ModelArgs
 
 

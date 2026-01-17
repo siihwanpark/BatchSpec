@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 class StandardAttention(BaseAttention):
-    """Standard attention.
+    """Standard attention with paged KV cache.
     
     Args:
         config: Model configuration

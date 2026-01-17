@@ -1,3 +1,5 @@
+"""MagicDec backend engine for speculative decoding with StreamingLLM drafter."""
+
 from pathlib import Path
 from typing import Optional
 
@@ -435,7 +437,7 @@ class MagicDecEngine(BaseEngine):
                     num_generated_tokens += 1
         
         profiler.end_run()
-        self.kv_page_table.delete_kv(num_generated_tokens) # revert the target model's KV cache to proceed next run with longer prefix
+        self.kv_page_table.delete_kv(self.kv_page_table.cachelens - prefix_len) # revert the target model's KV cache to proceed next run with longer prefix
         self.draft_kv_page_table.delete_kv(draft_kv_append_cnt) # revert the drafter's KV cache to proceed next run with longer prefix
         
         # SANITY CHECK: The KV cache length must be equal to the prefix length

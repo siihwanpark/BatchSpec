@@ -1,6 +1,6 @@
 """Multi-Token Prediction (MTP) transformer implementation."""
 
-from typing import Optional, Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import torch
 import torch.nn as nn

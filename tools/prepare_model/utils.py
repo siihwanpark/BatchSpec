@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Common utilities for model conversion."""
 
-import json
 import os
+import json
 from pathlib import Path
 from typing import Dict, Optional
 

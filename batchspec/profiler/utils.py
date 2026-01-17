@@ -1,7 +1,6 @@
 """Utility functions for profiler - statistics, formatting, etc."""
 
 import math
-import os
 from typing import Any, Dict, List
 
 import torch.distributed as dist
@@ -114,10 +113,10 @@ def now_s() -> str:
 def generate_run_name(args: Any) -> str:
     """Generate a descriptive run name from arguments."""
     model_name = args.model_name.split("/")[-1]
-    run_name = f"{model_name}/{args.dataset}/{args.backend}/"
-    run_name += f"bsz{args.batch_size}-gen{args.max_gen_len}-tp{len(args.rank_group)}"
-    if args.backend == "mtp":
-        run_name += f"-r{args.lora_rank}-k{args.draft_length}"
+    run_name = f"{model_name}/{args.backend}/{args.dataset}/"
+    run_name += f"bsz{args.batch_size}-tp{len(args.rank_group)}"
+    if args.backend != "standard":
+        run_name += f"-k{args.draft_length}"
     
     if args.temperature > 0:
         run_name += f"-sampling"

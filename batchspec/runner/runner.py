@@ -1,6 +1,5 @@
-"""Runner for E2E and benchmark execution."""
+"""Runner for benchmark execution."""
 
-import torch
 import torch.distributed as dist
 
 from batchspec.models import LoRAConfig
