@@ -60,7 +60,7 @@ export CUDA_VISIBLE_DEVICES=0
 #     --draft_length 4
 
 # exit 0
-
+export CUDA_LAUNCH_BLOCKING=1
 torchrun --standalone --nproc_per_node=1 -m batchspec.run\
     --backend eagle\
     --checkpoint_path $model_path\
@@ -69,7 +69,7 @@ torchrun --standalone --nproc_per_node=1 -m batchspec.run\
     --model_name $model_name\
     --eagle_name Qwen3-8B_eagle3\
     --rank_group 0\
-    --dataset AIME2025\
+    --dataset AIME2025 --force_budget\
     --dtype bfloat16\
     --batch_size 4 --prefix_len_list 1024 2048 --max_gen_len 128\
     --temperature 0.6 --top_p 0.95 --top_k 20\

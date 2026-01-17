@@ -61,11 +61,23 @@ class EAGLEModel(nn.Module):
         t2d = torch.zeros((config.vocab_size), dtype=torch.long)
         self.register_buffer('draft_to_target', d2t)
         self.register_buffer('target_to_draft', t2d)
-        
+
         # Distributed training support
         self.process_group = None
         self.world_size = None
         self.rank = None
+
+    
+    def setup_target_id_to_draft_id_mapping(self):
+        """Setup the mapping from target token IDs to draft token IDs after loading the state dict.
+            (Custom buffer; not included in the original EAGLE implementation.)
+        """
+        print("Setting up target_to_draft_id mapping...")
+        device = self.target_to_draft.device
+        t2d_id = torch.full((self.config.vocab_size,), -1, dtype=torch.long, device=device)
+        t2d_id[self.target_to_draft] = torch.arange(self.config.draft_vocab_size, dtype=torch.long, device=device)
+        self.target_to_draft_id = t2d_id
+        
 
     def _maybe_all_gather_logits(self, logits: Tensor) -> Tensor:
         """All-gather logits across all ranks for tensor parallel.
@@ -134,16 +146,13 @@ class EAGLEModel(nn.Module):
         return logits, hidden_states
 
     
-    def convert_vocab(self, draft_tokens: Tensor) -> Tensor:
-        """Convert draft tokens to target tokens.
-        
-        Args:
-            draft_tokens: Draft tokens [bsz, seq_len]
-            
-        Returns:
-            Target tokens [bsz, seq_len]
-        """
+    def convert_draft_to_target(self, draft_tokens: Tensor) -> Tensor:
         return draft_tokens + self.draft_to_target[draft_tokens]
+    
+    def convert_target_to_draft(self, target_tokens: Tensor) -> Tensor:
+        if not hasattr(self, 'target_to_draft_id'):
+            self.setup_target_id_to_draft_id_mapping()
+        return self.target_to_draft_id[target_tokens]
 
 
 class EAGLETransformer(BaseTransformer):

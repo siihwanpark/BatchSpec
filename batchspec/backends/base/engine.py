@@ -118,17 +118,17 @@ class BaseEngine(AttentionWrapperMixin):
         """Setup suppress and replace tokens.
         
         Args:
-            suppress_token: Token to suppress
-            replace_tokens: Tokens to replace
+            suppress_token: Token to suppress (by default, ['</think>'])
+            replace_tokens: Tokens to replace (by default, ['Wait', 'Alternatively'])
         """
         self.pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
         self.eos_token_id = self.tokenizer.eos_token_id
-        self.suppress_token_id = self.tokenizer.encode(suppress_token, add_special_tokens=False)[0]
+        self.suppress_token_ids = torch.tensor(
+            [self.tokenizer.encode(suppress_token, add_special_tokens=False)[0], self.eos_token_id],
+            dtype=torch.long, device=self.device)
         self.replace_token_ids = torch.tensor(
             [self.tokenizer.encode(token, add_special_tokens=False)[0] for token in replace_tokens],
-            dtype=torch.long,
-            device=self.device
-        )
+            dtype=torch.long,device=self.device)
 
     def compile(self):
         """Enable torch.compile for model inference.

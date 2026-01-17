@@ -95,20 +95,13 @@ class Runner:
         total_model_steps = 0
         input_ids = self.batch_sampler.sample_batch().to(self.device)
         
-        # Clear the KV cache for the first run
+        # Clear the KV cache at the beginning of the run
         self.engine.kv_page_table.clear_kv(self.engine.model)
         if self.args.backend == "eagle" and hasattr(self.engine, "eagle_kv_page_table"):
             self.engine.eagle_kv_page_table.clear_kv(self.engine.model.eagle)
 
         # Run the benchmark
         for i, prefix_len in enumerate(self.args.prefix_len_list):
-            self.args.prefix_len = prefix_len
-            if self.args.backend == "mtp":
-                self.args.max_total_tokens = self.args.batch_size * self.args.max_gen_len
-                self.args.max_len = self.args.prefix_len + (self.args.max_gen_len * 3) # prepare some margin for the fastest sequence
-            else:
-                self.args.max_len = self.args.prefix_len + (self.args.max_gen_len * 3) # prepare some margin for the fastest sequence
-            
             start_idx = self.args.prefix_len_list[i-1] if i > 0 else 0
             end_idx = self.args.prefix_len_list[i]
             current_input_ids = input_ids[:, start_idx:end_idx]
@@ -133,12 +126,7 @@ class Runner:
         print(f"Total generated tokens: {total_gen_tokens}")
         print(f"Total model steps (batch_size): {total_model_steps} (batch_size: {bsz})")
         print(f"➡️  Mean generated tokens: {total_gen_tokens / (total_model_steps * bsz):.2f}")
-    
-    def _load_batch(self, batch):
-        """Load batch from dataloader (E2E mode)."""
-        input_ids = batch['input_ids'].to(self.device)
-        query_lens = batch['attention_mask'].to(self.device).sum(dim=-1).to(torch.int32)
-        return input_ids, query_lens
+
     
     def _print_output(self, prefix_len, output, num_generated_tokens, model_steps):
         """Print generated output for each sequence."""

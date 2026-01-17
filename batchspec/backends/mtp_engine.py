@@ -653,29 +653,35 @@ class MTPEngine(BaseEngine):
         bonus_tokens: Tensor,
         accept_nums: Tensor,
     ) -> tuple[Tensor, Tensor]:
-        """Force budget by suppressing specific tokens.
-        
+        """Limits the number of accepted draft tokens when certain tokens appear.
+
+        The accepted draft tokens are truncated at the first occurrence of a suppressed token
+        in the draft. The bonus tokens are also forced to avoid suppressed tokens by
+        replacing them with a safe alternative when necessary.
+
         Args:
-            draft_tokens: Draft tokens
-            bonus_tokens: Bonus tokens
-            accept_nums: Accept counts
-            
+            draft_tokens: [bsz, k] draft token ids
+            bonus_tokens: [bsz, 1] bonus token ids
+            accept_nums: [bsz] accept numbers
+
         Returns:
-            tuple of (updated_bonus_tokens, updated_accept_nums)
+            updated_bonus_tokens: [bsz, 1] updated bonus token ids
+            updated_accept_nums: [bsz] updated accept numbers
         """
         suppressed_accept_nums = accept_nums.clone()
-        suppress_mask_in_accepted = (draft_tokens == self.suppress_token_id)
-        suppress_indices = torch.argmax(suppress_mask_in_accepted.int(), dim=-1)
-        suppress_indices[~suppress_mask_in_accepted.any(dim=-1)] = -1
-        
+        suppress_mask = (draft_tokens[..., None] == self.suppress_token_ids).any(dim=-1) # [bsz, k]
+
+        suppress_indices = torch.argmax(suppress_mask.int(), dim=-1) # [bsz]
+        suppress_indices[~suppress_mask.any(dim=-1)] = -1
         rows_to_update = suppress_indices != -1
         if rows_to_update.any():
             suppressed_accept_nums[rows_to_update] = suppress_indices[rows_to_update].to(suppressed_accept_nums.dtype)
-        
-        bonus_update_mask = rows_to_update | (bonus_tokens[:, 0] == self.suppress_token_id)
+
+        bonus_is_suppress = (bonus_tokens == self.suppress_token_ids).any(dim=-1) # [bsz]
+        bonus_update_mask = rows_to_update | bonus_is_suppress
         if bonus_update_mask.any():
             num_to_replace = bonus_update_mask.sum()
             random_indices = torch.randint(0, self.replace_token_ids.shape[0], (num_to_replace,), device=bonus_tokens.device)
             bonus_tokens[bonus_update_mask, 0] = self.replace_token_ids[random_indices].to(bonus_tokens.dtype)
-        
+
         return bonus_tokens, suppressed_accept_nums

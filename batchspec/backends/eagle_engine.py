@@ -97,7 +97,9 @@ class EAGLEChainEngine(BaseEngine):
         # Setup base caches (add 1 for potential decode token)
         self.max_seq_len = max_seq_length
         self.page_size = page_size
-        super().setup_caches(batch_size, max_seq_length + self.draft_length + 1, page_size, prefill_chunk_size)
+
+        max_cachelen = max_seq_length + self.draft_length + 1
+        super().setup_caches(batch_size, max_cachelen, page_size, prefill_chunk_size)
 
         # Create target attention wrapper (causal attention kernel)
         self.target_attn_buffer = self._create_attention_buffer(attn_buffer_size_mb)
@@ -111,7 +113,7 @@ class EAGLEChainEngine(BaseEngine):
         self.eagle_kv_page_table = PageTable(
             page_size=page_size,
             max_batch_size=batch_size,
-            max_num_pages_per_request=(max_seq_length + self.draft_length + 1) // page_size,
+            max_num_pages_per_request=(max_cachelen + page_size - 1) // page_size,
             device=self.device
         )
 
@@ -126,6 +128,12 @@ class EAGLEChainEngine(BaseEngine):
                 causal_attn_kernel=self.target_attn_wrapper,
                 eagle_attn_kernel=self.eagle_attn_wrapper,
             )
+
+
+    def setup_special_tokens(self):
+        """Setup special tokens."""
+        super().setup_special_tokens()
+        self.draft_eos_token_id = self.model.eagle.convert_target_to_draft(self.eos_token_id)
         
 
     def compile(self):
@@ -141,7 +149,7 @@ class EAGLEChainEngine(BaseEngine):
         Args:
             input_ids: Input token IDs [bsz, seq_len]
         Returns:
-            Logits of shape (bsz, seq_len, vocab_size), Hidden states of shape (bsz, seq_len, hidden_size)
+            Logits of shape (bsz, seq_len, target_vocab_size), Hidden states of shape (bsz, seq_len, hidden_size)
         """
         bsz, seq_len = input_ids.shape
         qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * seq_len
@@ -154,7 +162,7 @@ class EAGLEChainEngine(BaseEngine):
                 position_ids=position_ids,
                 qo_indptr=qo_indptr,
                 kv_page_table=self.kv_page_table,
-            ) # [bsz, seq_len, vocab_size], [bsz, seq_len, hidden_size]
+            ) # [bsz, seq_len, target_vocab_size], [bsz, seq_len, hidden_size]
         
         return output
 
@@ -183,7 +191,7 @@ class EAGLEChainEngine(BaseEngine):
             input_ids: Input token IDs [bsz, seq_len]
             hidden_states: Hidden states from target model [bsz, seq_len, hidden_size]
         Returns:
-            Logits of shape (bsz, seq_len, vocab_size), Hidden states of shape (bsz, seq_len, hidden_size)
+            Logits of shape (bsz, seq_len, draft_vocab_size), Hidden states of shape (bsz, seq_len, hidden_size)
         """
         bsz, seq_len = input_ids.shape
         qo_indptr = torch.arange(bsz + 1, device=self.device, dtype=torch.int32) * seq_len
@@ -197,7 +205,7 @@ class EAGLEChainEngine(BaseEngine):
                 qo_indptr=qo_indptr,
                 position_ids=position_ids,
                 kv_page_table=self.eagle_kv_page_table,
-            ) # [bsz, seq_len, vocab_size], [bsz, seq_len, hidden_size]
+            ) # [bsz, seq_len, draft_vocab_size], [bsz, seq_len, hidden_size]
         
         return output
 
@@ -271,7 +279,7 @@ class EAGLEChainEngine(BaseEngine):
 
         logits, hidden_states = self.eagle_forward(input_ids, hidden_states)
         draft_tokens = sample(logits[:, 0], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
-        draft_tokens = self.model.eagle.convert_vocab(draft_tokens)
+        draft_tokens = self.model.eagle.convert_draft_to_target(draft_tokens)
 
         return draft_tokens, logits, hidden_states
 
@@ -305,6 +313,9 @@ class EAGLEChainEngine(BaseEngine):
         greedy = self.greedy
         draft_vocab_size = self.model.eagle.config.draft_vocab_size
         target_vocab_size = self.model.config.vocab_size
+
+        # Transformations between target and draft vocabularies
+        target_to_draft = self.model.eagle.target_to_draft
         
         # Define local variables
         model_steps = 0
@@ -337,7 +348,6 @@ class EAGLEChainEngine(BaseEngine):
         
                 # EAGLE Chain Draft
                 # First draft, we need to handle the double buffer case
-                print("[First Draft] Start")
                 if use_double_buffer:
                     pad_len = (~full_accept_mask).int() # indicate the padding length for the double buffer (0 for full accept sequences, 1 for others)
                     double_draft_tokens, double_draft_logits, double_hidden_states = self.draft(double_buffer, hidden_states)
@@ -353,31 +363,28 @@ class EAGLEChainEngine(BaseEngine):
                     draft_tokens, draft_logits, hidden_states = self.draft(tokens_buffer[:, :1], hidden_states)
                     tokens_buffer[:, 1:2] = draft_tokens
                     if not greedy: logits_buffer[:, :1] = draft_logits
-                print("[First Draft] End")
 
-                print("[Subsequent Drafts] Start")
                 # Subsequent drafts
                 for i in range(1, k):
                     draft_tokens, draft_logits, hidden_states = self.draft(tokens_buffer[:, i:i+1], hidden_states)
                     tokens_buffer[:, i+1:i+2] = draft_tokens
                     if not greedy: logits_buffer[:, i:i+1] = draft_logits
-                print("[Subsequent Drafts] End")
 
-                print("[Target Verification] Start")
                 # Target verification
                 target_logits, hidden_states = self.target_forward(tokens_buffer)
-                print("[Target Verification] End")
 
                 # Evaluate the posterior
                 if greedy:
                     bonus_tokens, accept_nums, eos_accepted = self.evaluate_posterior(tokens_buffer[:, 1:], target_logits.argmax(dim=-1))
                 else:
-                    # Extend the draft logits to the target vocabulary
-                    mapping = torch.arange(draft_vocab_size, device=device) + self.model.eagle.draft_to_target
-                    draft_logits = torch.full((bsz, k, target_vocab_size), float('-inf'), device=device, dtype=dtype)
-                    draft_logits.scatter_(dim=2, index=mapping[None, None, :].expand(bsz, k, draft_vocab_size), src=logits_buffer)
-                    
-                    bonus_tokens, accept_nums, eos_accepted = self.evaluate_posterior(tokens_buffer[:, 1:], target_logits, draft_logits)
+                    # ========== Use Draft Vocabulary ===========
+                    # Project the target logits to the draft vocabulary
+                    target_logits = target_logits[..., target_to_draft] # [bsz, k+1, draft_vocab_size]
+                    draft_tokens = self.model.eagle.convert_target_to_draft(tokens_buffer[:, 1:]) # [bsz, k]
+
+                    bonus_tokens, accept_nums, eos_accepted = self.evaluate_posterior(draft_tokens, target_logits, logits_buffer)
+                    # ==== Convert back to Target Vocabulary ====
+                    bonus_tokens = self.model.eagle.convert_draft_to_target(bonus_tokens) # [bsz, 1]
                 
                 # Force budget
                 if force_budget:
@@ -390,8 +397,6 @@ class EAGLEChainEngine(BaseEngine):
                 # Note that the drafter's KV cache follows the target model's KV cache with a delay of 1 token.
                 self.kv_page_table.delete_kv((k+1) - accept_nums)
                 self.eagle_kv_page_table.delete_kv(torch.clamp(k - accept_nums, min=0))
-                print(f"[Decode] accept_nums: {accept_nums}")
-                print(f"[Decode] cachelen: {self.kv_page_table.cachelens}, {self.eagle_kv_page_table.cachelens}")
                 
                 # SANITY CHECK: The KV cache delay must be 1 for the partially accepted sequences, and 2 for the fully accepted sequences.
                 kv_cache_delay = self.kv_page_table.cachelens - self.eagle_kv_page_table.cachelens
@@ -400,14 +405,14 @@ class EAGLEChainEngine(BaseEngine):
                 assert torch.all(kv_cache_delay[full_accept_mask] == 2), f"The KV cache delay must be 2 for the fully accepted sequences, but got {kv_cache_delay[full_accept_mask]}"
 
                 # Update output
-                print("[Update Output] Start")
                 write_indices = num_generated_tokens[:, None] + torch.arange(k + 1, device=device)[None, :] # [B, k+1]
                 output[batch_indices_2d, write_indices] = tokens_buffer
                 num_generated_tokens += accept_nums
                 model_steps += 1
-                print("[Update Output] End")
 
-                print("[Prepare Next Iteration] Start") 
+                # print(f"[Decode] tokens_buffer: {tokens_buffer}")
+                # print(f"[Decode] bonus_tokens: {bonus_tokens}")
+
                 # Prepare inputs for the next iteration
                 tokens_buffer[:, :1] = bonus_tokens
                 if accept_nums.max() == k+1:
@@ -431,7 +436,6 @@ class EAGLEChainEngine(BaseEngine):
                     ], dim=1)
                 else:
                     hidden_states = hidden_states[batch_indices, accept_nums-1][:, None]
-                print("[Prepare Next Iteration] End")
                 
                 # Check the terminal condition
                 eos_accepted_or_generated = eos_accepted | (tokens_buffer[:, 0] == eos_token_id)
@@ -487,20 +491,18 @@ class EAGLEChainEngine(BaseEngine):
             eos_accepted = (eos_condition & accept_flags_matrix).any(dim=1, keepdim=True) # [bsz, 1]
             return bonus_tokens, accept_nums[:, 0], eos_accepted
         else:
+            """ Note that all the tokens here are in the draft vocabulary, not the target vocabulary. """
             assert draft_logits is not None, "Draft logits must be provided for non-greedy mode"
             assert target_preds_or_logits.dim() == 3, "Target predicted logits must be a 3D tensor (bsz, seq_len, vocab_size)"
 
-            target_probs = get_sampling_probs(target_preds_or_logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature) # [bsz, draft_length+1, V]
-            draft_probs = get_sampling_probs(draft_logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature) # [bsz, draft_length, V]
-
-            print(f"[Evaluate Posterior] Start chain speculative sampling")
+            target_probs = get_sampling_probs(target_preds_or_logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
+            draft_probs = get_sampling_probs(draft_logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)
             output_tokens, _, emitted_nums = chain_speculative_sampling(draft_probs, draft_tokens, target_probs)
-            accept_nums = emitted_nums + 1 # [bsz, 1]
-            print(f"[Evaluate Posterior] End chain speculative sampling")
+            accept_nums = emitted_nums + 1
             
             last_valid_idx = ((output_tokens != -1).to(torch.long) * torch.arange(output_tokens.size(1), device=output_tokens.device)).argmax(dim=1, keepdim=True)
-            bonus_tokens = output_tokens.gather(1, last_valid_idx) # [bsz, 1]
-            eos_accepted = (self.eos_token_id == output_tokens).any(dim=1, keepdim=True) # [bsz, 1]
+            bonus_tokens = output_tokens.gather(1, last_valid_idx)
+            eos_accepted = (self.draft_eos_token_id == output_tokens).any(dim=1, keepdim=True)
             return bonus_tokens, accept_nums, eos_accepted
     
     
@@ -510,29 +512,35 @@ class EAGLEChainEngine(BaseEngine):
         bonus_tokens: Tensor,
         accept_nums: Tensor,
     ) -> tuple[Tensor, Tensor]:
-        """Force budget by suppressing specific tokens.
-        
+        """Limits the number of accepted draft tokens when certain tokens appear.
+
+        The accepted draft tokens are truncated at the first occurrence of a suppressed token
+        in the draft. The bonus tokens are also forced to avoid suppressed tokens by
+        replacing them with a safe alternative when necessary.
+
         Args:
-            draft_tokens: Draft tokens
-            bonus_tokens: Bonus tokens
-            accept_nums: Accept counts
-            
+            draft_tokens: [bsz, k] draft token ids
+            bonus_tokens: [bsz, 1] bonus token ids
+            accept_nums: [bsz] accept numbers
+
         Returns:
-            tuple of (updated_bonus_tokens, updated_accept_nums)
+            updated_bonus_tokens: [bsz, 1] updated bonus token ids
+            updated_accept_nums: [bsz] updated accept numbers
         """
         suppressed_accept_nums = accept_nums.clone()
-        suppress_mask_in_accepted = (draft_tokens == self.suppress_token_id)
-        suppress_indices = torch.argmax(suppress_mask_in_accepted.int(), dim=-1)
-        suppress_indices[~suppress_mask_in_accepted.any(dim=-1)] = -1
-        
+        suppress_mask = (draft_tokens[..., None] == self.suppress_token_ids).any(dim=-1) # [bsz, k]
+
+        suppress_indices = torch.argmax(suppress_mask.int(), dim=-1) # [bsz]
+        suppress_indices[~suppress_mask.any(dim=-1)] = -1
         rows_to_update = suppress_indices != -1
         if rows_to_update.any():
             suppressed_accept_nums[rows_to_update] = suppress_indices[rows_to_update].to(suppressed_accept_nums.dtype)
-        
-        bonus_update_mask = rows_to_update | (bonus_tokens[:, 0] == self.suppress_token_id)
+
+        bonus_is_suppress = (bonus_tokens == self.suppress_token_ids).any(dim=-1) # [bsz]
+        bonus_update_mask = rows_to_update | bonus_is_suppress
         if bonus_update_mask.any():
             num_to_replace = bonus_update_mask.sum()
             random_indices = torch.randint(0, self.replace_token_ids.shape[0], (num_to_replace,), device=bonus_tokens.device)
             bonus_tokens[bonus_update_mask, 0] = self.replace_token_ids[random_indices].to(bonus_tokens.dtype)
-        
+
         return bonus_tokens, suppressed_accept_nums
