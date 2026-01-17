@@ -81,6 +81,16 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         dim=4096, intermediate_size=12288, vocab_size=151936, 
         rope_base=1000000.0, norm_eps=1e-6, qk_norm=True
     ),
+    "Qwen3-14B": dict(
+        block_size=40960, n_layer=40, n_head=40, n_local_heads=8, 
+        dim=5120, intermediate_size=17408, vocab_size=151936, 
+        rope_base=1000000.0, norm_eps=1e-6, qk_norm=True
+    ),
+    "Qwen3-32B": dict(
+        block_size=40960, n_layer=64, n_head=64, n_local_heads=8, 
+        head_dim=128, dim=5120, intermediate_size=25600, vocab_size=151936, 
+        rope_base=1000000.0, norm_eps=1e-6, qk_norm=True
+    ),
     
     # DeepSeek series
     "DeepSeek-R1-Distill-Qwen-1.5B": dict(
@@ -126,6 +136,16 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
     "Qwen3-8B_eagle3": dict(
         block_size=40960, n_layer=1, n_head=32, n_local_heads=8, 
         dim=4096, intermediate_size=12288, vocab_size=151936, 
+        draft_vocab_size=32000, rope_base=1000000.0, norm_eps=1e-6,
+    ),
+    "Qwen3-14B_eagle3": dict(
+        block_size=40960, n_layer=1, n_head=40, n_local_heads=8, 
+        dim=5120, intermediate_size=17408, vocab_size=151936, 
+        draft_vocab_size=32000, rope_base=1000000.0, norm_eps=1e-6,
+    ),
+    "Qwen3-32B_eagle3": dict(
+        block_size=40960, n_layer=1, n_head=64, n_local_heads=8, 
+        dim=5120, intermediate_size=25600, vocab_size=151936, 
         draft_vocab_size=32000, rope_base=1000000.0, norm_eps=1e-6,
     ),
     "EAGLE3-DeepSeek-R1-Distill-LLaMA-8B": dict(

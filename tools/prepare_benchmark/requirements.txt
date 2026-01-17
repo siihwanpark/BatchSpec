@@ -1,4 +1,4 @@
-torch==2.7.1+cu126
+torch==2.9.0+cu128
 vllm
 transformers
 datasets

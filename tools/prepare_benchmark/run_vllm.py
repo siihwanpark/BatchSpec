@@ -7,11 +7,12 @@ Usage:
         --input_jsonl data/seed_prompts/AIME2025_1000.jsonl --num_samples 1000 \
         --seed 42 --system_prompt "You are a helpful assistant." --prefix_len 1024 \
         --max_model_len 32768 --max_gen_len 30720 --temperature 0.6 --top_p 0.95 --top_k 20 \
-        --output_dir data/responses --outfile_suffix responses --save_inputs
+        --output_dir data/responses --outfile_suffix responses
 """
 
 
 import os
+import ast
 import sys
 import time
 import json
@@ -31,9 +32,14 @@ CODE_GENERATION_PREFIX = (
     "that matches the specification and passes all tests.\n\nQuestion: {question}\n\n"
 )
 
+MMLU_PRO_PREFIX = (
+    "You are an knowledge expert, you are supposed to answer the multi-choice question to derive your final answer as `The answer is ...`."
+    "Q: {question}\n{options_str}\n"
+)
+
 
 def parse_args():
-    p = argparse.ArgumentParser("vLLM JSONL Inference (multi-GPU, chat-template optional)")
+    p = argparse.ArgumentParser("vLLM JSONL Inference (multi-GPU, chat-template)")
 
     # Model / tokenizer
     p.add_argument("--model", type=str, required=True,
@@ -64,9 +70,9 @@ def parse_args():
                    help="vLLM max model length (KV cache bound).")
     p.add_argument("--max_gen_len", type=int, default=30720,
                    help="Max new tokens.")
-    p.add_argument("--temperature", type=float, default=0.6)
-    p.add_argument("--top_p", type=float, default=0.95)
-    p.add_argument("--top_k", type=int, default=20)
+    p.add_argument("--temperature", type=float, default=0.0)
+    p.add_argument("--top_p", type=float, default=1.0)
+    p.add_argument("--top_k", type=int, default=-1)
 
     # Output
     p.add_argument("--output_dir", type=str, default="data/responses")
@@ -166,11 +172,26 @@ def read_prompts(
     return reservoir
 
 
-def apply_chat_template(tokenizer, text: str, system_prompt: Optional[str], enable_thinking: bool, code_generation: bool=False) -> str:
+def form_options(options: str):
+    options = ast.literal_eval(options)
+    option_str = 'Options are:\n'
+    opts = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']
+    for opt, o in zip(options, opts):
+        option_str += f'({o}): {opt}' + '\n'
+    return option_str
+
+
+def apply_chat_template(tokenizer, text: str, options: Optional[list], system_prompt: Optional[str], enable_thinking: bool, code_generation: bool=False, general_task: bool=False) -> str:
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": CODE_GENERATION_PREFIX.format(question=text) if code_generation else text})
+    
+    if code_generation:
+        messages.append({"role": "user", "content": CODE_GENERATION_PREFIX.format(question=text)})
+    elif general_task:
+        messages.append({"role": "user", "content": MMLU_PRO_PREFIX.format(question=text, options_str=options)})
+    else:
+        messages.append({"role": "user", "content": text})
 
     # Qwen3 supports enable_thinking flag; others will just ignore extra kw.
     # Ref: Qwen docs about apply_chat_template & thinking mode.
@@ -227,14 +248,20 @@ class VLLMRunner:
         )
 
     def build_inputs(self, records: List[Dict[str, Any]]) -> List[str]:
+        general = ("MMLU" in self.args.input_jsonl) or ("SuperGPQA" in self.args.input_jsonl)
+        code = "code" in self.args.input_jsonl.lower()
+
         inputs = []
         for rec in records:
             prompt = apply_chat_template(
                 tokenizer=self.tokenizer,
                 text=rec["prompt"],
+                options=form_options(rec["options"]) if general else None,
                 system_prompt=self.args.system_prompt,
                 enable_thinking=True,
-                code_generation="code" in self.args.input_jsonl.lower())
+                code_generation=code,
+                general_task=general,
+            )
             if self.args.prefix_len:
                 prompt = truncate_by_tokens(self.tokenizer, prompt, self.args.prefix_len)
             inputs.append(prompt)

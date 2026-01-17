@@ -1,89 +1,48 @@
-# !/bin/bash
+#!/bin/bash
+set -euo pipefail
 
-export TORCH_CUDA_ARCH_LIST=9.0
+export TORCH_CUDA_ARCH_LIST="10.0"
 
-OPTION=${1:-0}
-if [ $OPTION -eq 0 ]; then
-    while true; do
-        busy_pids=$(nvidia-smi -i 0,1 --query-compute-apps=pid --format=csv,noheader | tr -d '[:space:]')
+for model in DSL-8B Qwen3-8B Qwen3-14B Qwen3-32B; do
+    if [ "$model" = "DSL-8B" ]; then
+        model_path="/home/jovyan/sihwan-volume/checkpoints/DeepSeek-R1-Distill-Llama-8B"
+    elif [ "$model" = "Qwen3-8B" ]; then
+        model_path="/home/jovyan/sihwan-volume/checkpoints/Qwen3-8B"
+    elif [ "$model" = "Qwen3-14B" ]; then
+        model_path="/home/jovyan/sihwan-volume/checkpoints/Qwen3-14B"
+    elif [ "$model" = "Qwen3-32B" ]; then
+        model_path="/home/jovyan/sihwan-volume/checkpoints/Qwen3-32B"
+    fi
 
-        if [ -z "$busy_pids" ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: GPUs 0-1 are idle. Running script."
-            export CUDA_VISIBLE_DEVICES=0,1
-            python run_vllm.py \
-                --model ~/sihwan_workspace/Qwen3-8B \
-                --tp_size 2 \
-                --input_jsonl data/seed_prompts/AIME2025_1000.jsonl \
-                --max_gen_len 30720 \
-                --max_model_len 32768 \
-                --temperature 0.6 --top_p 0.95 --top_k 20
-            break
-        else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: GPUs 0-1 are busy (PIDs: $busy_pids). Sleep 15 minutes."
-            sleep 15m
-        fi
+    extra_args=()
+    if [ "$model" != "DSL-8B" ]; then
+        extra_args=(--top_k 20)
+    fi
+
+    for dataset in AIME2025 CodeForces GPQA-Diamond MMLU-Pro SuperGPQA; do
+        input_jsonl="/home/jovyan/sihwan-volume/BatchSpec/benchmark_data/seed_prompts/${dataset}_1000.jsonl"
+        output_dir="/home/jovyan/sihwan-volume/BatchSpec/benchmark_data/responses/${model}"
+
+        python -m tools.prepare_benchmark.run_vllm \
+            --model "$model_path" \
+            --tp_size 4 \
+            --input_jsonl "$input_jsonl" \
+            --output_dir "$output_dir" --outfile_suffix "${dataset}_sampling" \
+            --max_gen_len 30720 \
+            --max_model_len 32768 \
+            --system_prompt "You are a helpful assistant." \
+            --temperature 0.6 --top_p 0.95 \
+            "${extra_args[@]}"
+
+        python -m tools.prepare_benchmark.run_vllm \
+            --model "$model_path" \
+            --tp_size 4 \
+            --input_jsonl "$input_jsonl" \
+            --output_dir "$output_dir" --outfile_suffix "${dataset}_greedy" \
+            --max_gen_len 30720 \
+            --max_model_len 32768 \
+            --system_prompt "You are a helpful assistant." \
+            --temperature 0.0
     done
-elif [ $OPTION -eq 1 ]; then
-    while true; do
-        busy_pids=$(nvidia-smi -i 2,3 --query-compute-apps=pid --format=csv,noheader | tr -d '[:space:]')
+done
 
-        if [ -z "$busy_pids" ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: GPUs 2-3 are idle. Running script."
-            export CUDA_VISIBLE_DEVICES=2,3
-            python run_vllm.py \
-                --model ~/sihwan_workspace/Qwen3-8B \
-                --tp_size 2 \
-                --input_jsonl data/seed_prompts/LiveMathBench_1000.jsonl \
-                --max_gen_len 30720 \
-                --max_model_len 32768 \
-                --temperature 0.6 --top_p 0.95 --top_k 20
-            break
-        else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: GPUs 2-3 are busy (PIDs: $busy_pids). Sleep 15 minutes."
-            sleep 15m
-        fi
-    done
-elif [ $OPTION -eq 2 ]; then
-    while true; do
-        busy_pids=$(nvidia-smi -i 4,5 --query-compute-apps=pid --format=csv,noheader | tr -d '[:space:]')
-
-        if [ -z "$busy_pids" ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: GPUs 4-5 are idle. Running script."
-            export CUDA_VISIBLE_DEVICES=4,5
-            python run_vllm.py \
-                --model ~/sihwan_workspace/Qwen3-8B \
-                --tp_size 2 \
-                --input_jsonl data/seed_prompts/LiveCodeBench_1000.jsonl \
-                --max_gen_len 30720 \
-                --max_model_len 32768 \
-                --temperature 0.6 --top_p 0.95 --top_k 20
-            break
-        else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: GPUs 4-5 are busy (PIDs: $busy_pids). Sleep 15 minutes."
-            sleep 15m
-        fi
-    done
-elif [ $OPTION -eq 3 ]; then
-    while true; do
-        busy_pids=$(nvidia-smi -i 6,7 --query-compute-apps=pid --format=csv,noheader | tr -d '[:space:]')
-
-        if [ -z "$busy_pids" ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: GPUs 6-7 are idle. Running script."
-            export CUDA_VISIBLE_DEVICES=6,7
-            python run_vllm.py \
-                --model ~/sihwan_workspace/Qwen3-8B \
-                --tp_size 2 \
-                --input_jsonl data/seed_prompts/CodeForces_1000.jsonl \
-                --max_gen_len 30720 \
-                --max_model_len 32768 \
-                --temperature 0.6 --top_p 0.95 --top_k 20
-            break
-        else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: GPUs 6-7 are busy (PIDs: $busy_pids). Sleep 15 minutes."
-            sleep 15m
-        fi
-    done
-else
-    echo "Invalid option"
-    exit 1
-fi
