@@ -1,7 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-export TORCH_CUDA_ARCH_LIST="10.0"
+# Suppress Python warnings
+export PYTHONWARNINGS="ignore::UserWarning,ignore::FutureWarning,ignore::DeprecationWarning"
+
+# Environment Setup
+export ENABLE_INTRA_NODE_COMM=1
+export FLASHINFER_JIT_VERBOSE=1
+export TORCH_CUDA_ARCH_LIST=$(python -c "import torch; cc=torch.cuda.get_device_capability(0); print(f'{cc[0]}.{cc[1]}')")
+echo "Auto-detected CUDA compute capability: ${TORCH_CUDA_ARCH_LIST}"
 
 for model in DSL-8B Qwen3-8B Qwen3-14B Qwen3-32B; do
     if [ "$model" = "DSL-8B" ]; then
@@ -27,7 +34,7 @@ for model in DSL-8B Qwen3-8B Qwen3-14B Qwen3-32B; do
             --model "$model_path" \
             --tp_size 4 \
             --input_jsonl "$input_jsonl" \
-            --output_dir "$output_dir" --outfile_suffix "${dataset}_sampling" \
+            --output_dir "$output_dir" --outfile_suffix "_sampling" \
             --max_gen_len 30720 \
             --max_model_len 32768 \
             --system_prompt "You are a helpful assistant." \
@@ -38,7 +45,7 @@ for model in DSL-8B Qwen3-8B Qwen3-14B Qwen3-32B; do
             --model "$model_path" \
             --tp_size 4 \
             --input_jsonl "$input_jsonl" \
-            --output_dir "$output_dir" --outfile_suffix "${dataset}_greedy" \
+            --output_dir "$output_dir" --outfile_suffix "_greedy" \
             --max_gen_len 30720 \
             --max_model_len 32768 \
             --system_prompt "You are a helpful assistant." \

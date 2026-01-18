@@ -1,6 +1,7 @@
 import os
 from tqdm import tqdm
 
+import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer
 
@@ -36,7 +37,11 @@ def main():
             tokenizer.pad_token = tokenizer.eos_token
 
         # Prepare the dataset
-        dataset = load_benchmark_dataset(model_name=args.model_name, dataset_name=args.dataset)
+        dataset = load_benchmark_dataset(
+            model_name=args.model_name,
+            dataset_name=args.dataset,
+            greedy=args.temperature == 0.0,
+        )
 
         # Initialize the engine
         if args.backend == "standard":
@@ -85,8 +90,13 @@ def main():
 
     finally:
         if use_tp and dist.is_initialized():
-            print(f"[Rank {rank}] Cleaning up distributed process group ...")
-            dist.destroy_process_group()
+            try:
+                dist.barrier()
+                torch.cuda.synchronize()
+                print(f"[Rank {rank}] Cleaning up distributed process group ...", flush=True)
+                dist.destroy_process_group()
+            except Exception as e:
+                print(f"[Rank {rank}] destroy_process_group failed: {e}", flush=True)
 
 
 if __name__ == "__main__":

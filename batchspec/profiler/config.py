@@ -62,7 +62,6 @@ class ProfilerConfig:
     model_profiling: bool = False        # model/module breakdown
     engine_profiling: bool = False       # engine call breakdown
     num_total_runs: int = 10             # total number of runs (only for reporting)
-    warmup_runs: int = 1                 # ignore first N runs
     print_per_run: bool = True           # print run summary
     run_name: Optional[str] = None       # folder name override
     kv_len_reduce: str = "mean"          # one of {"mean","max","p50","p90","sum"}

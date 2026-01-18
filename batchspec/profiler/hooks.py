@@ -18,7 +18,6 @@ def is_profiler_active(profiler: "Profiler") -> bool:
     if isinstance(profiler, NullProfiler): return False
     if profiler.disabled: return False
     if not profiler._active_measure: return False
-    if not profiler._run_ge_warmup: return False
     return True
 
 

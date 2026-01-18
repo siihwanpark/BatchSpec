@@ -64,11 +64,6 @@ class Profiler:
         # Per-run Results
         self._runs: List[Dict[str, Any]] = []
 
-        # Run-level warmup gating
-        self._run_idx: int = 0
-        self._run_ge_warmup: bool = False
-        self._run_idx_by_prefix: Dict[str, int] = {}
-
         # Global Aggregation (across all runs)
         self._g_lat_ms: List[float] = []
         self._g_tokens: int = 0
@@ -187,15 +182,7 @@ class Profiler:
         self._iters_engine_sums.clear()
         self._iter_idx = 0
         self._iter_kv_lens.clear()
-        self._run_idx += 1
-    
-        key = str(int(prefix_len)) if prefix_len is not None else "None"
-        self._run_idx_by_prefix[key] = self._run_idx_by_prefix.get(key, 0) + 1
-        group_idx = self._run_idx_by_prefix[key]
-
-        self._run_ge_warmup = (group_idx > int(self.cfg.warmup_runs))
         
-
     def step_timing_ctx(self):
         """Context manager for timing a single step."""
         class _StepCtx:
@@ -228,34 +215,33 @@ class Profiler:
                 if self.prof.cfg.dist_barrier and dist_ready():
                     dist.barrier()  # outside timing
 
-                if self.prof._run_ge_warmup:
-                    step_ms = float(self.s.elapsed_time(self.e))
-                    self.prof._iters_elapsed_ms.append(step_ms)
-                    tok = getattr(self.prof, "_pending_step_tokens", 0)
-                    self.prof._iter_tokens.append(int(tok))
-                    self.prof._pending_step_tokens = 0
+                step_ms = float(self.s.elapsed_time(self.e))
+                self.prof._iters_elapsed_ms.append(step_ms)
+                tok = getattr(self.prof, "_pending_step_tokens", 0)
+                self.prof._iter_tokens.append(int(tok))
+                self.prof._pending_step_tokens = 0
 
-                    # record KV length
-                    kvlen = getattr(self.prof, "_pending_step_kvlen", None)
-                    self.prof._iter_kv_lens.append(int(kvlen if kvlen is not None else 0))
-                    self.prof._pending_step_kvlen = None
+                # record KV length
+                kvlen = getattr(self.prof, "_pending_step_kvlen", None)
+                self.prof._iter_kv_lens.append(int(kvlen if kvlen is not None else 0))
+                self.prof._pending_step_kvlen = None
 
-                    # Process events
-                    if ((self.prof.cfg.model_profiling or self.prof.cfg.engine_profiling) 
-                        and self.prof._iter_events):
-                        lm: Dict[str, float] = {}
-                        lb: Dict[str, float] = {}
-                        for etype, a, b, bucket in self.prof._iter_events:
-                            dt = float(a.elapsed_time(b)) if etype == "cuda" else float(a)
-                            key, domain = canon_bucket(bucket)
-                            if domain == "engine":
-                                lb[key] = lb.get(key, 0.0) + dt
-                            else:
-                                lm[key] = lm.get(key, 0.0) + dt
-                        if lm:
-                            self.prof._iters_model_sums.append(lm)
-                        if lb:
-                            self.prof._iters_engine_sums.append(lb)
+                # Process events
+                if ((self.prof.cfg.model_profiling or self.prof.cfg.engine_profiling) 
+                    and self.prof._iter_events):
+                    lm: Dict[str, float] = {}
+                    lb: Dict[str, float] = {}
+                    for etype, a, b, bucket in self.prof._iter_events:
+                        dt = float(a.elapsed_time(b)) if etype == "cuda" else float(a)
+                        key, domain = canon_bucket(bucket)
+                        if domain == "engine":
+                            lb[key] = lb.get(key, 0.0) + dt
+                        else:
+                            lm[key] = lm.get(key, 0.0) + dt
+                    if lm:
+                        self.prof._iters_model_sums.append(lm)
+                    if lb:
+                        self.prof._iters_engine_sums.append(lb)
 
                 self.prof._iter_events.clear()
                 return False
@@ -286,19 +272,6 @@ class Profiler:
     def end_run(self) -> None:
         """End the current profiling run and aggregate stats."""
         if self.disabled:
-            return
-
-        # Skip warmup runs
-        if not self._run_ge_warmup:
-            self._iters_elapsed_ms.clear()
-            self._iter_tokens.clear()
-            self._iter_events.clear()
-            self._iters_model_sums.clear()
-            self._iters_engine_sums.clear()
-            if self.cfg.print_per_run and self.rank == 0 and not self._run_ge_warmup:
-                pl = self._current_meta.get("prefix_len", None)
-                key = str(pl) if pl is not None else "None"
-                print(f"[Profiler] warmup skipped (prefix_len={pl}) group_run={self._run_idx_by_prefix[key]}/{self.cfg.warmup_runs}")
             return
 
         # Per-run stats
@@ -683,7 +656,7 @@ class Profiler:
             f.write(
                 f"- Config: `model_profiling={cfg['model_profiling']}`  "
                 f"`engine_profiling={cfg['engine_profiling']}`  "
-                f"`num_runs(warmup/total)={cfg['warmup_runs']}/{cfg['num_total_runs']}`  "
+                f"`num_runs(total)={cfg['num_total_runs']}`  "
                 f"`strict_sync={cfg['strict_sync']}`  `dist_barrier={cfg['dist_barrier']}`  "
                 f"`kv_bins={cfg['kv_bins']}`  `kv_len_reduce={cfg['kv_len_reduce']}`\n\n"
             )

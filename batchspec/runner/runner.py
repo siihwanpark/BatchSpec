@@ -29,6 +29,7 @@ class Runner:
         self.engine = engine
         self.batch_sampler = batch_sampler
         self.device = engine.device
+        self.run_cnt = 0
         
     def setup(self, process_group):
         """
@@ -93,7 +94,7 @@ class Runner:
         self.engine.setup_caches(**cache_params)
         self.engine.setup_sampling_params(
             temperature=self.args.temperature, 
-            top_p=self.args.top_p, 
+            top_p=self.args.top_p,
             top_k=self.args.top_k,
             force_budget=self.args.force_budget,
         )
@@ -106,6 +107,8 @@ class Runner:
         
         Iterates through batches, calls engine.generate_batch(), and prints statistics.
         """
+        self.run_cnt += 1
+
         total_gen_tokens = 0
         total_model_steps = 0
         input_ids = self.batch_sampler.sample_batch().to(self.device)
@@ -133,6 +136,10 @@ class Runner:
             # Distributed barrier if needed
             if self.args.rank_group and len(self.args.rank_group) > 1:
                 dist.barrier()
+            
+            if self.run_cnt == 1:
+                print("[Runner] Early exit for the 1st run, which is used only for compilation and excluded from statistics.")
+                break
         
         # Print final statistics
         bsz = input_ids.shape[0]

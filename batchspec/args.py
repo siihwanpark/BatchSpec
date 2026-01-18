@@ -58,7 +58,7 @@ class CommonArguments:
         metadata={"help": "Enable torch.compile() for the model."}
     )
     attn_buffer_size_mb: int = field(
-        default=384,
+        default=768,
         metadata={"help": "Attention buffer size in MB for the attention kernel."}
     )
     

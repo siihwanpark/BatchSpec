@@ -6,7 +6,7 @@ set -e  # Exit on any error
 # =============================================================================
 
 # Base checkpoint directory (all models will be saved under this directory)
-BASE_CHECKPOINT_DIR="/home/mngcuser1/sihwan_workspace/checkpoints/MTP_adapters"
+BASE_CHECKPOINT_DIR="/home/jovyan/sihwan-volume/checkpoints/MTP-GLoRA-ckpt"
 
 # =============================================================================
 # LoRA Adapter Checkpoint Directories
@@ -15,10 +15,7 @@ BASE_CHECKPOINT_DIR="/home/mngcuser1/sihwan_workspace/checkpoints/MTP_adapters"
 # You can comment out lora_ckpt_dirs you don't want to process.
 
 LORA_CKPT_DIRS=(
-    # "Qwen3-8B/am-qwen3-distilled-120k-rank16-lr2e-4-bsz4-SoftSCE-fused/step-30000"
-    # "Qwen3-8B/am-qwen3-distilled-120k-rank128-lr2e-4-bsz8-SoftSCE/step-45000"
-    # "Qwen3-8B/am-qwen3-distilled-120k-rank128-lr2e-4-bsz8-SoftSCE/step-50000"
-    "DeepSeek-R1-Distill-Llama-8B/openthoughts-114k-rank16-lr2e-4-bsz8/step-30000"
+    "Qwen3-14B/step-30000"
 )
 
 # =============================================================================
@@ -67,7 +64,7 @@ for i in "${!LORA_CKPT_DIRS[@]}"; do
     
     # Run the conversion script
     log "Starting LoRA conversion..."
-    python -m tools.convert_weights \
+    python -m tools.prepare_model.convert_weights \
         --type lora \
         --lora_path "$lora_ckpt_dir/model.safetensors" \
         --model_name "$model_name"

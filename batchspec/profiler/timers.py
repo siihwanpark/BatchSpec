@@ -156,7 +156,7 @@ def _maybe_cuda_timer(bucket: str, need_model: bool = True):
     """
     prof = get_active_profiler()
     if (prof is None or prof.disabled or 
-        not prof._active_measure or not prof._run_ge_warmup):
+        not prof._active_measure):
         return _NOOP
     
     if need_model is True and not prof.cfg.model_profiling:
@@ -174,7 +174,7 @@ def _maybe_cpu_timer(bucket: str, need_engine: bool = True):
     """Return a CPU timer context or no-op."""
     prof = get_active_profiler()
     if (prof is None or prof.disabled or 
-        not prof._active_measure or not prof._run_ge_warmup):
+        not prof._active_measure):
         return _NOOP
     
     if need_engine and not prof.cfg.engine_profiling:

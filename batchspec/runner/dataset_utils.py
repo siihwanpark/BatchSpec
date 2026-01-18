@@ -28,10 +28,7 @@ PROMPT_KEY_DICT = {
     "GPQA-Diamond": "Question",
 }
 
-BENCHMARK_DATASET_PATH_DICT = {
-    "Qwen3-8B": "/workspace/BatchSpec/benchmark_data/",
-    "DeepSeek-R1-Distill-Llama-8B": "/workspace/BatchSpec/batchspec/benchmark_data/responses_DSL-8B/"
-}
+BENCHMARK_DATASET_BASE_DIR = "/home/jovyan/sihwan-volume/BatchSpec/benchmark_data/responses"
 
 
 def load_dataset(tokenizer, dataset_name, num_samples=None, num_questions_in_prompt=1):
@@ -103,19 +100,19 @@ def load_dataset(tokenizer, dataset_name, num_samples=None, num_questions_in_pro
     return ds
 
 
-def load_benchmark_dataset(model_name, dataset_name):
+def load_benchmark_dataset(model_name, dataset_name, greedy=False):
     """
     Load a benchmark dataset from the responses directory.
     
     Args:
         tokenizer: HuggingFace tokenizer (unused, kept for consistency)
         dataset_name: Name of the dataset
-        
+        greedy: Whether to use greedy decoding (If set to False, use sampling)
+
     Returns:
         Dataset with input/output fields
     """
-    root = BENCHMARK_DATASET_PATH_DICT[model_name]
-    filepath = Path(f"{root}/{dataset_name}_1000_responses.json")
+    filepath = Path(f"{BENCHMARK_DATASET_BASE_DIR}/{model_name}/{dataset_name}_1000_{'greedy' if greedy else 'sampling'}.json")
     with Path(filepath).open("r", encoding="utf-8") as f:
         data = json.load(f)
     return Dataset.from_list(data.get("results", []))
