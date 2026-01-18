@@ -1,10 +1,5 @@
-transformers
-numpy==1.26.3
-protobuf
-sentencepiece
-datasets
-tiktoken
-packaging
-ninja
-einops
+torch==2.9.0+cu128
+transformers==4.56.0
+datasets>=4.0.0
+flashinfer-python==0.3.1
 hf_transfer
