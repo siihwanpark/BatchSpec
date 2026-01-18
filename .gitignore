@@ -211,3 +211,6 @@ tmp/
 logs/
 benchmark_data/
 profiler_out/
+
+# Experiment files
+*.normalized.tsv

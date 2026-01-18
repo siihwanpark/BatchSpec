@@ -147,6 +147,7 @@ run_partition() {
 
 # Phase 0: Run 4 GPU experiments alone (highest priority)
 if [ -f "${TMP_DIR}/4g.queue" ]; then
+    wait_for_gpus_idle "0,1,2,3" "3m" "5m"
 	log "Phase 0: running 4g tasks exclusively"
 	run_worker 4g
 else
