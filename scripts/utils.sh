@@ -25,10 +25,10 @@ die() { echo "[$(ts)] ERROR: $*" >&2; return 1; }
 # CUDA / environment helpers
 # =============================================================================
 
-# Detect CUDA compute capability via PyTorch.
+# Detect CUDA compute capability
 # Args:
 #   $1: device index (default: 0)
-# Prints: "<major>.<minor>" (e.g., 8.9, 9.0, 10.0)
+# Returns: "<major>.<minor>" (e.g., 8.9, 9.0, 10.0)
 detect_cuda_arch() {
     local device_idx="${1:-0}"
     python - <<EOF
@@ -41,22 +41,22 @@ print(f"{cc[0]}.{cc[1]}")
 EOF
 }
 
-# Set TORCH_CUDA_ARCH_LIST if unset.
+# Set TORCH_CUDA_ARCH_LIST if unset
 # Args:
 #   $1: device index for detection (default: 0)
 set_torch_cuda_arch_list() {
     local device_idx="${1:-0}"
     if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
-    export TORCH_CUDA_ARCH_LIST="$(detect_cuda_arch "$device_idx")"
+        export TORCH_CUDA_ARCH_LIST="$(detect_cuda_arch "$device_idx")"
     fi
 }
 
 # =============================================================================
-# Model / drafter path helpers
+# Model path helpers
 # =============================================================================
 
-# Prints three fields:
-#   <model_name> <model_path> <tokenizer_path>
+# Get model name, model path, and tokenizer path
+# Returns: <model_name> <model_path> <tokenizer_path>
 get_model_path() {
     local model="$1"
     local base_ckpt_dir="${BASE_CKPT_DIR}"
@@ -78,12 +78,12 @@ get_model_path() {
     esac
 }
 
-# Prints extra args for given backend
+# Get extra args for given backend
 # Args:
 #   $1: backend
 #   $2: model
 #   $3: draft length
-# Prints: extra args string
+# Returns: extra args string
 get_backend_args() {
     local backend="$1"
     local model="$2"
@@ -144,9 +144,10 @@ get_backend_args() {
     esac
 }
 
-# Optional: sanity-check a checkpoint path exists.
+# Check if a checkpoint path exists
 # Args:
 #   $1: path
+# Returns: 0 if file exists, 1 otherwise
 ensure_file_exists() {
     local path="$1"
     if [ ! -f "$path" ]; then
@@ -159,10 +160,10 @@ ensure_file_exists() {
 # GPU waiting helpers
 # =============================================================================
 
-# Wait until given GPUs are idle according to nvidia-smi compute apps.
+# Wait until given GPUs are idle according to nvidia-smi compute apps
 # Args:
 #   $1: GPU list in CSV format (e.g., "0,1" or "4,5")
-#   $2: idle confirm sleep (default: 3m)   # wait once more after first idle detection
+#   $2: idle confirm sleep (default: 3m)
 #   $3: busy sleep (default: 5m)
 
 wait_for_gpus_idle() {
@@ -206,15 +207,15 @@ wait_for_gpus_idle() {
 # Graceful exit helpers
 # =============================================================================
 
-# Internal cleanup handlers (callers may append)
+# Internal cleanup handlers
 __CLEANUP_HANDLERS=()
 
-# Register a cleanup command (string)
+# Register a cleanup command
 register_cleanup() {
   __CLEANUP_HANDLERS+=("$*")
 }
 
-# Run all registered cleanup handlers
+# Run all registered cleanup handlers and return the exit code
 _run_cleanup() {
     local rc=$?
     for cmd in "${__CLEANUP_HANDLERS[@]}"; do
@@ -223,19 +224,21 @@ _run_cleanup() {
     return $rc
 }
 
-# Enable graceful exit traps
+# Enable graceful exit traps (SIGINT and SIGTERM)
 enable_graceful_exit() {
     trap '_on_signal SIGINT' SIGINT
     trap '_on_signal SIGTERM' SIGTERM
     trap '_run_cleanup' EXIT
 }
 
+# Handle signals
 _on_signal() {
     local sig="$1"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: Caught ${sig}, shutting down gracefully..." >&2
     exit 130
 }
 
+# Normalize a TSV file (replace spaces with tabs)
 normalize_tsv() {
     local src="$1"
     [ -f "$src" ] || { echo "normalize_tsv: file not found: $src" >&2; return 1; }
@@ -274,7 +277,7 @@ PY
 # Small conveniences
 # =============================================================================
 
-# Safe read helper for get_model_path style outputs.
+# Safe read helper for get_model_path style outputs
 # Usage: read -r model_name model_path tokenizer_path <<< "$(get_model_path "$model")"
 # (Provided as a reminder; bash built-in read is sufficient.)
 
