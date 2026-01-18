@@ -201,10 +201,7 @@ class EAGLETransformer(BaseTransformer):
             eagle_attn_kernel: Attention kernel for EAGLE module
             non_causal_attn_kernel: Non-causal attention kernel for target model (Not used in chain mode)
         """
-        # Setup RoPE function
-        # Here we separate the RoPE function for target model and EAGLE module
-        # to handle the different RoPE configurations between target model and EAGLE module
-        # (e.g. DeepSeek-R1-Llama-8B and EAGLE3-DeepSeek-R1-Distill-LLaMA-8B)
+        # Setup RoPE functions
         target_rope_func = setup_rope_function(self.config, use_position_ids=True)
         eagle_rope_func = setup_rope_function(self.eagle.config, use_position_ids=True)
         

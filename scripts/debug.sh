@@ -37,8 +37,10 @@ nproc_per_node=1
 rank_group="0"
 
 export CUDA_VISIBLE_DEVICES=0
+
+extra_args=(--eagle_name EAGLE3-DeepSeek-R1-Distill-LLaMA-8B --eagle_checkpoint_path $base_ckpt_dir/EAGLE3-DeepSeek-R1-Distill-LLaMA-8B/model.pth --draft_length 4)
 torchrun --standalone --nproc_per_node=$nproc_per_node -m batchspec.run\
-        --backend ngram\
+        --backend eagle\
         --checkpoint_path $model_path\
         --tokenizer_path $tokenizer_path\
         --model_name $model_name\
@@ -50,7 +52,8 @@ torchrun --standalone --nproc_per_node=$nproc_per_node -m batchspec.run\
         --printoutput\
         --profiling\
         --num_total_runs 3\
-        --attn_buffer_size_mb 768 --draft_length 10
+        --attn_buffer_size_mb 768\
+        "${extra_args[@]}"
 exit 0
 
 # for backend in standard standalone eagle magicdec mtp; do
