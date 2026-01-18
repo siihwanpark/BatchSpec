@@ -1,16 +1,12 @@
+import os
 import json
+import argparse
 from typing import List, Dict, Any
 from tqdm import tqdm
 
 from datasets import Dataset
 from transformers import AutoTokenizer
 import numpy as np
-
-# DATASET_FILE = "/workspace/BatchSpec/benchmark_data/responses/DeepSeek-R1-Distill-Llama-8B/AIME2025_1000_sampling.json"
-# TOKENIZER_NAME_OR_PATH = "/workspace/checkpoints/DeepSeek-R1-Distill-Llama-8B"
-
-DATASET_FILE = "/workspace/BatchSpec/benchmark_data/responses/Qwen3-8B/AIME2025_1000_sampling.json"
-TOKENIZER_NAME_OR_PATH = "/workspace/checkpoints/Qwen3-0.6B"
 
 
 def load_results_dataset(file_path: str) -> Dataset:
@@ -20,13 +16,15 @@ def load_results_dataset(file_path: str) -> Dataset:
 
 
 def simulate_dataset_mean_accept(
+    dataset_file: str,
+    tokenizer_name_or_path: str,
     prefix_len_list: List[int],
     draft_length: int = 10,
     max_ngram_size: int = 3,
     max_samples: int | None = None,
 ):
-    ds = load_results_dataset(DATASET_FILE).shuffle(seed=42)
-    tok = AutoTokenizer.from_pretrained(TOKENIZER_NAME_OR_PATH, use_fast=True)
+    ds = load_results_dataset(dataset_file).shuffle(seed=42)
+    tok = AutoTokenizer.from_pretrained(tokenizer_name_or_path, use_fast=True)
 
     prefix_len_list = sorted(prefix_len_list)
     N = len(ds) if max_samples is None else min(len(ds), max_samples)
@@ -195,7 +193,45 @@ def simulate_oracle_acceptance(
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, default=None)
+    parser.add_argument("--dataset", type=str, default=None)
+    parser.add_argument("--draft_length", type=int, default=10)
+    parser.add_argument("--max_ngram_size", type=int, default=3)
+    parser.add_argument("--max_samples", type=int, default=None)
+    args = parser.parse_args()
+
+    if args.model is None or args.dataset is None:
+        raise ValueError("Model and dataset are required")
+    
+    model_name = args.model.split('/')[-1]
+    dataset_file = f"benchmark_data/responses/{model_name}/{args.dataset}_1000_sampling.json"
     prefix_len_list = [1024, 2048, 4096, 6144, 8192, 10240, 12288, 14336, 16384, 18432, 20480, 22528, 24576, 26624, 28672]
-    stats = simulate_dataset_mean_accept(prefix_len_list=prefix_len_list, draft_length=10, max_ngram_size=3, max_samples=10)
-    print(stats["global_token_weighted_MAL"])
-    print(stats["mean_MAL_by_prefix"])
+    
+    stats = simulate_dataset_mean_accept(
+        dataset_file=dataset_file,
+        tokenizer_name_or_path=args.model,
+        prefix_len_list=prefix_len_list,
+        draft_length=args.draft_length,
+        max_ngram_size=args.max_ngram_size,
+        max_samples=args.max_samples,
+    )
+
+    results = {
+        "config": {
+            "model": model_name,
+            "dataset": args.dataset,
+            "draft_length": args.draft_length,
+            "max_ngram_size": args.max_ngram_size,
+            "max_samples": args.max_samples,
+        },
+        "results": {
+            "global_mean_accepted_length": stats["global_token_weighted_MAL"],
+            "mean_accepted_length_by_prefix": stats["mean_MAL_by_prefix"],
+        },
+    }
+
+    os.makedirs(f"ngram_simulation_results/{model_name}", exist_ok=True)
+    with open(f"ngram_simulation_results/{model_name}/{args.dataset}_d{args.draft_length}_n{args.max_ngram_size}.json", "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=4, ensure_ascii=False)
+    print(f"Results saved to ngram_simulation_results/{model_name}/{args.dataset}_d{args.draft_length}_n{args.max_ngram_size}.json")
