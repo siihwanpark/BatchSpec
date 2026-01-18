@@ -1,25 +1,7 @@
 #!/usr/bin/env bash
-#
+
 # =============================================================================
-# utils.sh — Shared utility functions for benchmark / training scripts
-#
-# Usage:
-#   SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-#   source "${SCRIPT_DIR}/utils.sh"
-#
-#   export PYTHONWARNINGS="ignore::UserWarning,ignore::FutureWarning,ignore::DeprecationWarning"
-#   export ENABLE_INTRA_NODE_COMM=1
-#   export FLASHINFER_JIT_VERBOSE=1
-#   set_torch_cuda_arch_list
-#   log "Auto-detected CUDA compute capability: ${TORCH_CUDA_ARCH_LIST}"
-# 
-#   enable_graceful_exit
-#   register_cleanup 'echo "[cleanup] releasing resources..."'
-#   register_cleanup 'pkill -P $$ || true'
-#
-# Notes:
-# - This file intentionally avoids side effects (no exports/echo by default).
-# - Safe to source multiple times (guarded).
+# utils.sh — Shared utility functions for benchmark scripts
 # =============================================================================
 
 # ---- guard: avoid double-sourcing ----
@@ -29,10 +11,6 @@ if [ -n "${BATCHSPEC_UTILS_SH_LOADED:-}" ]; then
 fi
 BATCHSPEC_UTILS_SH_LOADED=1
 
-# ---- strictness: keep off by default (caller can enable) ----
-# (Caller script may use: set -euo pipefail)
-
-# ---- config defaults (caller may override before sourcing) ----
 : "${BASE_CKPT_DIR:=/home/jovyan/sihwan-volume/checkpoints}"
 
 # =============================================================================
@@ -113,53 +91,53 @@ get_backend_args() {
     local base_ckpt_dir="${BASE_CKPT_DIR}"
 
     if [ -z "$backend" ] || [ -z "$model" ]; then
-    echo "Usage: get_backend_args <backend> <model> <draft_length>" >&2
-    return 1
+        echo "Usage: get_backend_args <backend> <model> <draft_length>" >&2
+        return 1
     fi
     if [ -z "$draft_length" ] || ! [[ "$draft_length" =~ ^[0-9]+$ ]] || [ "$draft_length" -le 0 ]; then
-    echo "Invalid draft_length: '$draft_length' (must be a positive integer)" >&2
-    return 1
+        echo "Invalid draft_length: '$draft_length' (must be a positive integer)" >&2
+        return 1
     fi
 
     local key="${backend}:${model}"
 
     case "$key" in
-    standard:Qwen3-8B|standard:Qwen3-14B|standard:DSL-8B)
-        echo ""
-        ;;
+        standard:Qwen3-8B|standard:Qwen3-14B|standard:DSL-8B)
+            echo ""
+            ;;
 
-    standalone:Qwen3-8B|standalone:Qwen3-14B)
-        echo "--drafter_name Qwen3-0.6B --drafter_checkpoint_path ${base_ckpt_dir}/Qwen3-0.6B/model.pth --draft_length ${draft_length}"
-        ;;
-    standalone:DSL-8B)
-        echo "--drafter_name DeepSeek-R1-Distill-Llama-3.2-1B-Instruct --drafter_checkpoint_path ${base_ckpt_dir}/DeepSeek-R1-Distill-Llama-3.2-1B-Instruct/model.pth --draft_length ${draft_length}"
-        ;;
+        standalone:Qwen3-8B|standalone:Qwen3-14B)
+            echo "--drafter_name Qwen3-0.6B --drafter_checkpoint_path ${base_ckpt_dir}/Qwen3-0.6B/model.pth --draft_length ${draft_length}"
+            ;;
+        standalone:DSL-8B)
+            echo "--drafter_name DeepSeek-R1-Distill-Llama-3.2-1B-Instruct --drafter_checkpoint_path ${base_ckpt_dir}/DeepSeek-R1-Distill-Llama-3.2-1B-Instruct/model.pth --draft_length ${draft_length}"
+            ;;
 
-    eagle:Qwen3-8B)
-        echo "--eagle_name Qwen3-8B_eagle3 --eagle_checkpoint_path ${base_ckpt_dir}/Qwen3-8B_eagle3/model.pth --draft_length ${draft_length}"
-        ;;
-    eagle:Qwen3-14B)
-        echo "--eagle_name Qwen3-14B_eagle3 --eagle_checkpoint_path ${base_ckpt_dir}/Qwen3-14B_eagle3/model.pth --draft_length ${draft_length}"
-        ;;
-    eagle:DSL-8B)
-        echo "--eagle_name EAGLE3-DeepSeek-R1-Distill-LLaMA-8B --eagle_checkpoint_path ${base_ckpt_dir}/EAGLE3-DeepSeek-R1-Distill-LLaMA-8B/model.pth --draft_length ${draft_length}"
-        ;;
+        eagle:Qwen3-8B)
+            echo "--eagle_name Qwen3-8B_eagle3 --eagle_checkpoint_path ${base_ckpt_dir}/Qwen3-8B_eagle3/model.pth --draft_length ${draft_length}"
+            ;;
+        eagle:Qwen3-14B)
+            echo "--eagle_name Qwen3-14B_eagle3 --eagle_checkpoint_path ${base_ckpt_dir}/Qwen3-14B_eagle3/model.pth --draft_length ${draft_length}"
+            ;;
+        eagle:DSL-8B)
+            echo "--eagle_name EAGLE3-DeepSeek-R1-Distill-LLaMA-8B --eagle_checkpoint_path ${base_ckpt_dir}/EAGLE3-DeepSeek-R1-Distill-LLaMA-8B/model.pth --draft_length ${draft_length}"
+            ;;
 
-    magicdec:Qwen3-8B|magicdec:Qwen3-14B|magicdec:DSL-8B)
-        echo "--draft_length ${draft_length} --num_sink_tokens 16 --stream_budget 256"
-        ;;
+        magicdec:Qwen3-8B|magicdec:Qwen3-14B|magicdec:DSL-8B)
+            echo "--draft_length ${draft_length} --num_sink_tokens 16 --stream_budget 256"
+            ;;
 
-    mtp:Qwen3-8B)
-        echo "--lora_checkpoint_path ${base_ckpt_dir}/MTP_adapters/Qwen3-8B/model.pth --lora_rank 16 --lora_alpha 32 --draft_length ${draft_length}"
-        ;;
-    mtp:Qwen3-14B)
-        echo "--lora_checkpoint_path ${base_ckpt_dir}/MTP_adapters/Qwen3-14B/model.pth --lora_rank 16 --lora_alpha 32 --draft_length ${draft_length}"
-        ;;
-    mtp:DSL-8B)
-        echo "--lora_checkpoint_path ${base_ckpt_dir}/MTP_adapters/DeepSeek-R1-Distill-Llama-8B/model.pth --lora_rank 16 --lora_alpha 32 --draft_length ${draft_length}"
-        ;;
+        mtp:Qwen3-8B)
+            echo "--lora_checkpoint_path ${base_ckpt_dir}/MTP_adapters/Qwen3-8B/model.pth --lora_rank 16 --lora_alpha 32 --draft_length ${draft_length}"
+            ;;
+        mtp:Qwen3-14B)
+            echo "--lora_checkpoint_path ${base_ckpt_dir}/MTP_adapters/Qwen3-14B/model.pth --lora_rank 16 --lora_alpha 32 --draft_length ${draft_length}"
+            ;;
+        mtp:DSL-8B)
+            echo "--lora_checkpoint_path ${base_ckpt_dir}/MTP_adapters/DeepSeek-R1-Distill-Llama-8B/model.pth --lora_rank 16 --lora_alpha 32 --draft_length ${draft_length}"
+            ;;
 
-    *)
+        *)
         echo "Unknown backend/model combo: $key" >&2
         return 1
         ;;

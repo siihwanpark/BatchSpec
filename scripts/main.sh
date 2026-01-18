@@ -2,38 +2,43 @@
 set -u
 set -o pipefail
 
+# Import utils.sh
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/utils.sh"
 
+# Set environment variables
 export PYTHONWARNINGS="ignore::UserWarning,ignore::FutureWarning,ignore::DeprecationWarning"
 export ENABLE_INTRA_NODE_COMM=1
 export FLASHINFER_JIT_VERBOSE=1
-export TORCH_SYMM_MEM_DISABLE_MULTICAST=1
+export TORCH_SYMM_MEM_DISABLE_MULTICAST=1 # Due to well-known issues with PyTorch
 
+# Register cleanup functions
 enable_graceful_exit
 register_cleanup 'echo "[CLEANUP] releasing resources..."'
 register_cleanup 'pkill -P $$ || true'
 
+# Set CUDA architecture list
 set_torch_cuda_arch_list 0
 log "Auto-detected CUDA compute capability: ${TORCH_CUDA_ARCH_LIST}"
 
+# Print usage
 usage() {
   cat <<EOF
 Usage:
   main.sh --gpus "0,1" --nproc 2 --rank_group "0 1" \\
-    --model Qwen3-8B --backend eagle --draft_length 4 \\
-    --dataset AIME2025 --mode greedy|sampling \\
-    --bsz 64 --prefix_profile short|long \\
+    --model Qwen3-8B|DSL-8B|Qwen3-14B --backend standard|standalone|eagle|magicdec|mtp --draft_length 1|2|3|4 \\
+    --dataset AIME2025|CodeForces|GPQA-Diamond|MMLU-Pro|SuperGPQA --mode greedy|sampling \\
+    --bsz 16|32|64|128|256 --prefix_profile short|long \\
     [--top_p 0.95] [--top_k 20] [--temperature 0.6] \\
     [--dtype bfloat16] [--max_gen_len 128] [--num_total_runs 6]
 EOF
 }
 
-# ---- defaults ----
+# Set default values
 DATASET="AIME2025"
 DTYPE="bfloat16"
 MAX_GEN_LEN=128
-NUM_TOTAL_RUNS=1
+NUM_TOTAL_RUNS=11
 
 TOP_P="0.95"
 TOP_K=""
@@ -51,7 +56,7 @@ MODE=""
 BSZ=""
 PREFIX_PROFILE=""
 
-# ---- arg parse ----
+# Parse arguments
 while [ $# -gt 0 ]; do
   case "$1" in
     --gpus) GPUS="$2"; shift 2;;
@@ -80,7 +85,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ---- required args check ----
+# Check required arguments
 [ -n "$GPUS" ] || die "--gpus is required"
 [ -n "$NPROC" ] || die "--nproc is required"
 [ -n "$RANK_GROUP" ] || die "--rank_group is required"
@@ -94,14 +99,14 @@ done
 [ -n "$PREFIX_PROFILE" ] || die "--prefix_profile is required"
 [ -n "$DATASET" ] || die "--dataset is required"
 
-# ---- CUDA_VISIBLE_DEVICES ----
+# Set CUDA_VISIBLE_DEVICES
 export CUDA_VISIBLE_DEVICES="$GPUS"
 log "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES, TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}"
 
-# ---- MODEL -> model_name, model_path, tokenizer_path ----
+# Get model name, model path, and tokenizer path
 read -r model_name model_path tokenizer_path <<< "$(get_model_path "$MODEL")"
 
-# ---- prefix_profile -> PREFIX_LEN_LIST ----
+# Get prefix length list
 prefix_list_for() {
   local profile="$1"
   case "$profile" in
@@ -119,7 +124,7 @@ prefix_list_for() {
 
 PREFIX_LEN_LIST=( $(prefix_list_for "$PREFIX_PROFILE") )
 
-# ---- mode -> temperature, sampling args ----
+# Get sampling arguments
 SAMPLING_ARGS=()
 if [ "$MODE" = "greedy" ]; then
   TEMPERATURE="${TEMPERATURE:-0.0}"
@@ -133,12 +138,13 @@ else
   die "Unknown mode: $MODE (use greedy|sampling)"
 fi
 
-# ---- BACKEND, MODEL, DRAFT_LENGTH -> EXTRA_ARGS (backend-specific args) ----
+# Get backend-specific arguments
 EXTRA_ARGS="$(get_backend_args "$BACKEND" "$MODEL" "$DRAFT_LENGTH")"
 
 log "RUN: model=$MODEL backend=$BACKEND draft_length=$DRAFT_LENGTH dataset=$DATASET mode=$MODE bsz=$BSZ gpus=$GPUS nproc=$NPROC"
 log "EXTRA_ARGS: $EXTRA_ARGS"
 
+# Run benchmark
 torchrun --standalone --nproc_per_node="$NPROC" -m batchspec.run \
   --backend "$BACKEND" \
   --checkpoint_path "$model_path" \
