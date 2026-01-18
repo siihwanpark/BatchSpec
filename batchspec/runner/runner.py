@@ -123,7 +123,11 @@ class Runner:
             current_input_ids = input_ids[:, start_idx:end_idx]
             
             # Call engine.generate()
-            output, num_generated_tokens, model_steps = self.engine.generate_batch(input_ids=current_input_ids, max_gen_len=self.args.max_gen_len, prefix_len=prefix_len)
+            generate_params = {'input_ids': current_input_ids, 'max_gen_len': self.args.max_gen_len, 'prefix_len': prefix_len}
+            if self.args.backend == "ngram":
+                generate_params['full_input_ids'] = input_ids[:, 0:end_idx]
+            
+            output, num_generated_tokens, model_steps = self.engine.generate_batch(**generate_params)
             
             # Print output if requested
             if self.args.printoutput:

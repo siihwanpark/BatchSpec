@@ -27,9 +27,9 @@ class CommonArguments:
     tokenizer_path: str = field(
         metadata={"help": "Path to the tokenizer."}
     )
-    backend: Literal["standard", "standalone", "eagle", "magicdec", "mtp"] = field(
+    backend: Literal["standard", "standalone", "ngram", "eagle", "magicdec", "mtp"] = field(
         default="standard",
-        metadata={"help": "Backend name (standard, standalone, eagle, magicdec, mtp)."}
+        metadata={"help": "Backend name (standard, standalone, ngram, eagle, magicdec, mtp)."}
     )
     dataset: str = field(
         default="AIME2025",
@@ -131,6 +131,14 @@ class StandaloneArguments:
         metadata={"help": "Use tensor parallelism for standalone drafter module."}
     )
 
+
+@dataclass
+class NGramArguments:
+    """N-gram-specific arguments."""
+    max_ngram_size: int = field(
+        default=3,
+        metadata={"help": "Maximum N-gram size for the N-gram draft."}
+    )
 
 @dataclass
 class EAGLEArguments:
@@ -285,6 +293,7 @@ def parse_args() -> SimpleNamespace:
         SamplingArguments,
         SpecDecArguments,
         StandaloneArguments,
+        NGramArguments,
         EAGLEArguments,
         MagicDecArguments,
         MTPArguments,
@@ -293,9 +302,9 @@ def parse_args() -> SimpleNamespace:
     ))
     
     parsed = parser.parse_args_into_dataclasses()
-    (common, benchmark, sampling, specdec, standalone, eagle, magicdec, mtp, profiler, distributed) = parsed
+    (common, benchmark, sampling, specdec, standalone, ngram, eagle, magicdec, mtp, profiler, distributed) = parsed
     
-    merged = _merge_to_namespace(common, benchmark, sampling, specdec, standalone, eagle, magicdec, mtp, profiler, distributed)
+    merged = _merge_to_namespace(common, benchmark, sampling, specdec, standalone, ngram, eagle, magicdec, mtp, profiler, distributed)
     merged = _postprocess_args(merged)
     
     return merged

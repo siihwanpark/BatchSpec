@@ -20,17 +20,17 @@ HF_TOKEN=""
 REPO_IDS=(
     # "meta-llama/Meta-Llama-3.1-8B"
     # "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-    # "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
     # "Qwen/Qwen3-0.6B"
     # "Qwen/Qwen3-1.7B"
     # "Qwen/Qwen3-8B"
-    "Qwen/Qwen3-0.6B"
-    "Qwen/Qwen3-8B"
+    # "Qwen/Qwen3-0.6B"
+    # "Qwen/Qwen3-8B"
     # "Qwen/Qwen3-14B"
     # "Qwen/Qwen3-32B"
     # "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
     # "yuhuili/EAGLE3-DeepSeek-R1-Distill-LLaMA-8B"
-    "AngelSlim/Qwen3-8B_eagle3"
+    # "AngelSlim/Qwen3-8B_eagle3"
     # "AngelSlim/Qwen3-14B_eagle3"
     # "AngelSlim/Qwen3-32B_eagle3"
 )
@@ -91,7 +91,7 @@ for i in "${!REPO_IDS[@]}"; do
     log "Starting download and conversion..."
     
     # Build command with optional hf_token
-    CMD="python -m tools.prepare_model.convert_weights --type base --repo_id \"$repo_id\" --out_dir \"$output_dir\""
+    CMD="python -m tools.prepare_model.convert_weights --cleanup --type base --repo_id \"$repo_id\" --out_dir \"$output_dir\""
     [ -n "$HF_TOKEN" ] && CMD="$CMD --hf_token \"$HF_TOKEN\""
     [ -n "$model_name" ] && CMD="$CMD --model_name \"$model_name\""
     

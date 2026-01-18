@@ -7,7 +7,8 @@ from transformers import AutoTokenizer
 
 from batchspec.backends.utils import init_dist, setup_seed
 from batchspec.backends import (
-    StandardEngine, StandaloneEngine, EAGLEChainEngine, MagicDecEngine, MTPEngine
+    StandardEngine, StandaloneEngine, NGramDraftEngine,
+    EAGLEChainEngine, MagicDecEngine, MTPEngine
 )
 from batchspec.profiler import Profiler, register_active_profiler, release_active_profiler
 from batchspec.runner import Runner, BatchSampler, load_benchmark_dataset
@@ -48,6 +49,8 @@ def main():
             engine = StandardEngine(tokenizer=tokenizer, dtype=args.dtype, device=args.device)
         elif args.backend == "standalone":
             engine = StandaloneEngine(tokenizer=tokenizer, dtype=args.dtype, device=args.device, draft_length=args.draft_length)
+        elif args.backend == "ngram":
+            engine = NGramDraftEngine(tokenizer=tokenizer, dtype=args.dtype, device=args.device, draft_length=args.draft_length, max_ngram_size=args.max_ngram_size)
         elif args.backend == "eagle":
             engine = EAGLEChainEngine(tokenizer=tokenizer, dtype=args.dtype, device=args.device, draft_length=args.draft_length)
         elif args.backend == "magicdec":
