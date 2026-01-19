@@ -21,15 +21,15 @@ NORMALIZED_EXP_FILE="$(normalize_tsv "$EXP_FILE")"
 log "Using normalized experiment file: $NORMALIZED_EXP_FILE"
 
 # Define slot configurations
-# "GPU_ids nproc_per_node rank_group"
+# "GPU_ids|nproc_per_node|rank_group"
 declare -A SLOT
-SLOT[4g]="0,1,2,3 4 '0 1 2 3'"
-SLOT[2g0]="0,1 2 '0 1'"
-SLOT[2g1]="2,3 2 '0 1'"
-SLOT[1g0]="0 1 '0'"
-SLOT[1g1]="1 1 '0'"
-SLOT[1g2]="2 1 '0'"
-SLOT[1g3]="3 1 '0'"
+SLOT[4g]="0,1,2,3|4|0 1 2 3"
+SLOT[2g0]="0,1|2|0 1"
+SLOT[2g1]="2,3|2|0 1"
+SLOT[1g0]="0|1|0"
+SLOT[1g1]="1|1|0"
+SLOT[1g2]="2|1|0"
+SLOT[1g3]="3|1|0"
 
 # Create temporary directory
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,8 +56,7 @@ run_worker() {
     [ -n "${SLOT[$slot]:-}" ] || die "Slot not defined: $slot"
 
     local gpus nproc rank_group
-    eval "set -- ${SLOT[$slot]}"
-    gpus="$1"; nproc="$2"; rank_group="$3"
+    IFS='|' read -r gpus nproc rank_group <<< "${SLOT[$slot]}"
 
     log "Worker start slot=$slot gpus=$gpus nproc=$nproc rank_group=$rank_group"
 
@@ -147,11 +146,11 @@ run_partition() {
 
 # Phase 0: Run 4 GPU experiments alone (highest priority)
 if [ -f "${TMP_DIR}/4g.queue" ]; then
-    wait_for_gpus_idle "0,1,2,3" "3m" "5m"
-	log "Phase 0: running 4g tasks exclusively"
-	run_worker 4g
+	wait_for_gpus_idle "0,1,2,3" "3m" "5m"
+    log "Phase 0: running 4g tasks exclusively"
+    run_worker 4g
 else
-	log "Phase 0: no 4g tasks (skip)"
+    log "Phase 0: no 4g tasks (skip)"
 fi
 
 # Phase 1: Run two independent partitions concurrently

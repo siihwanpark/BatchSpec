@@ -14,6 +14,29 @@ from batchspec.profiler import Profiler, register_active_profiler, release_activ
 from batchspec.runner import Runner, BatchSampler, load_benchmark_dataset
 from batchspec.args import parse_args
 
+   
+def check_path_and_broadcast(file_path: str, rank: int, src_rank: int = 0) -> bool:
+    """
+    Check if the `file_path` exists, and synchronize the decision across all ranks when TP is enabled.
+    
+    - If TP is enabled (dist initialized), only `src_rank` checks the filesystem and broadcasts the decision.
+    - If TP is disabled, each process checks locally.
+    """
+    if not dist.is_initialized():
+        exists = os.path.exists(file_path)
+        if exists:
+            print(f"[Rank {rank}] Profiler report already exists: {file_path}", flush=True)
+        return exists
+
+    exists = rank == src_rank and os.path.exists(file_path)
+    obj = [exists]
+    dist.broadcast_object_list(obj, src=src_rank)
+    exists = obj[0]
+
+    if exists and rank == src_rank:
+        print(f"[Rank {rank}] Profiler report already exists: {file_path}", flush=True)
+    return exists
+
 
 def main():
     args = parse_args()
@@ -67,6 +90,12 @@ def main():
         if args.profiling:
             # Initialize the profiler
             prof = Profiler(runner_args=args)
+
+            # Skip if the profiler report already exists
+            src_rank = args.rank_group[0] if (args.rank_group and len(args.rank_group) > 0) else 0
+            if check_path_and_broadcast(os.path.join(prof.out_dir, "report.md"), rank, src_rank):
+                return
+            
             register_active_profiler(prof)
             prof.attach_model(engine.model, use_gated_lora=args.backend == "mtp")
             prof.attach_engine(engine)
@@ -95,11 +124,9 @@ def main():
         if use_tp and dist.is_initialized():
             try:
                 dist.barrier()
-                torch.cuda.synchronize()
+            finally:
                 print(f"[Rank {rank}] Cleaning up distributed process group ...", flush=True)
                 dist.destroy_process_group()
-            except Exception as e:
-                print(f"[Rank {rank}] destroy_process_group failed: {e}", flush=True)
 
 
 if __name__ == "__main__":

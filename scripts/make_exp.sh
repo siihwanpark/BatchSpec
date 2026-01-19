@@ -83,70 +83,105 @@ append_row() {
 
 # done
 
+# for dataset in AIME2025 MMLU-Pro; do
+    
+#     # 4-GPU runs
+#     for model in Qwen3-8B DSL-8B Qwen3-14B; do
+#         if [ $model == "Qwen3-14B" ]; then
+#             bsz_list=(256 128 64)
+#         else
+#             bsz_list=(256 128)
+#         fi
+
+#         for mode in sampling; do
+#             for bsz in "${bsz_list[@]}"; do
+#                 if [ $bsz -eq 256 ]; then
+#                     prefix_profile="short"
+#                 else
+#                     prefix_profile="long"
+#                 fi
+
+#                 append_row "4g" "$model" "magicdec" 1 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+#                 append_row "4g" "$model" "magicdec" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+#                 append_row "4g" "$model" "magicdec" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+#                 append_row "4g" "$model" "magicdec" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+
+#             done
+#         done
+#     done
+
+#     # 2-GPU runs
+#     for model in Qwen3-8B DSL-8B Qwen3-14B; do
+#         if [ $model == "Qwen3-14B" ]; then
+#             bsz_list=(32)
+#         else
+#             bsz_list=(64)
+#         fi
+
+#         for mode in sampling; do
+#             for bsz in "${bsz_list[@]}"; do
+#                 prefix_profile="long"
+
+#                 append_row "2g0" "$model" "magicdec" 1 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+#                 append_row "2g1" "$model" "magicdec" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+#                 append_row "2g1" "$model" "magicdec" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+#                 append_row "2g0" "$model" "magicdec" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+        
+#             done
+#         done
+#     done
+
+#     # 1-GPU runs
+#     for model in Qwen3-8B DSL-8B Qwen3-14B; do
+#         if [ $model == "Qwen3-14B" ]; then
+#             bsz_list=(16)
+#         else
+#             bsz_list=(32 16)
+#         fi
+
+#         for mode in sampling; do
+#             for bsz in "${bsz_list[@]}"; do
+#                 prefix_profile="long"
+
+#                 append_row "1g0" "$model" "magicdec" 1 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+#                 append_row "1g1" "$model" "magicdec" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+#                 append_row "1g2" "$model" "magicdec" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+#                 append_row "1g3" "$model" "magicdec" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+#             done
+#         done
+#     done
+
+# done
+
 for dataset in AIME2025 MMLU-Pro; do
     
     # 4-GPU runs
     for model in Qwen3-8B DSL-8B Qwen3-14B; do
         if [ $model == "Qwen3-14B" ]; then
-            bsz_list=(256 128 64)
+            bsz_list=(128)
         else
-            bsz_list=(256 128)
+            bsz_list=(128)
         fi
 
         for mode in sampling; do
             for bsz in "${bsz_list[@]}"; do
-                if [ $bsz -eq 256 ]; then
-                    prefix_profile="short"
-                else
-                    prefix_profile="long"
-                fi
+                prefix_profile="long"
 
                 append_row "4g" "$model" "magicdec" 1 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
                 append_row "4g" "$model" "magicdec" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
                 append_row "4g" "$model" "magicdec" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
                 append_row "4g" "$model" "magicdec" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
 
-            done
-        done
-    done
+                append_row "4g" "$model" "eagle" 1 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "4g" "$model" "eagle" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "4g" "$model" "eagle" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "4g" "$model" "eagle" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
 
-    # 2-GPU runs
-    for model in Qwen3-8B DSL-8B Qwen3-14B; do
-        if [ $model == "Qwen3-14B" ]; then
-            bsz_list=(32)
-        else
-            bsz_list=(64)
-        fi
+                append_row "4g" "$model" "standalone" 1 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "4g" "$model" "standalone" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "4g" "$model" "standalone" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "4g" "$model" "standalone" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
 
-        for mode in sampling; do
-            for bsz in "${bsz_list[@]}"; do
-                prefix_profile="long"
-
-                append_row "2g0" "$model" "magicdec" 1 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "2g1" "$model" "magicdec" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "2g1" "$model" "magicdec" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "2g0" "$model" "magicdec" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-        
-            done
-        done
-    done
-
-    # 1-GPU runs
-    for model in Qwen3-8B DSL-8B Qwen3-14B; do
-        if [ $model == "Qwen3-14B" ]; then
-            bsz_list=(16)
-        else
-            bsz_list=(32 16)
-        fi
-
-        for mode in sampling; do
-            for bsz in "${bsz_list[@]}"; do
-                prefix_profile="long"
-
-                append_row "1g0" "$model" "magicdec" 1 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "1g1" "$model" "magicdec" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "1g2" "$model" "magicdec" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "1g3" "$model" "magicdec" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
             done
         done
     done
