@@ -28,7 +28,7 @@ Usage:
   main.sh --gpus "0,1" --nproc 2 --rank_group "0 1" \\
     --model Qwen3-8B|DSL-8B|Qwen3-14B --backend standard|standalone|eagle|magicdec|mtp --draft_length 1|2|3|4 \\
     --dataset AIME2025|CodeForces|GPQA-Diamond|MMLU-Pro|SuperGPQA --mode greedy|sampling \\
-    --bsz 16|32|64|128|256 --prefix_profile short|long \\
+    --bsz 16|32|64|128|256 --prefix_profile 8k|16k|32k|debug \\
     [--top_p 0.95] [--top_k 20] [--temperature 0.6] \\
     [--dtype bfloat16] [--max_gen_len 128] [--num_total_runs 6]
 EOF
@@ -110,11 +110,17 @@ read -r model_name model_path tokenizer_path <<< "$(get_model_path "$MODEL")"
 prefix_list_for() {
   local profile="$1"
   case "$profile" in
-    short)
+    8k)
+      echo "1024 2048 3072 4096 5120 6144 7168"
+      ;;
+    16k)
       echo "1024 2048 4096 6144 8192 10240 12288 14336"
       ;;
-    long)
+    32k)
       echo "1024 2048 4096 8192 12288 16384 20480 24576 28672"
+      ;;
+    debug)
+      echo "1024 2048"
       ;;
     *)
       die "Unknown prefix_profile: $profile"

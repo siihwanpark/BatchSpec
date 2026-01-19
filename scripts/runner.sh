@@ -15,11 +15,6 @@ register_cleanup 'pkill -P $$ || true'
 EXP_FILE="${1:-${SCRIPT_DIR}/exp.tsv}"
 [ -f "$EXP_FILE" ] || die "Experiment file not found: $EXP_FILE"
 
-# Normalize experiment file (replace spaces with tabs)
-log "Original experiment file: $EXP_FILE"
-NORMALIZED_EXP_FILE="$(normalize_tsv "$EXP_FILE")"
-log "Using normalized experiment file: $NORMALIZED_EXP_FILE"
-
 # Define slot configurations
 # "GPU_ids|nproc_per_node|rank_group"
 declare -A SLOT
@@ -37,6 +32,11 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$(mktemp -d "${PROJECT_DIR}/tmp/tmp.XXXXXX")"
 register_cleanup "rm -rf '$TMP_DIR' || true"
 
+# Normalize experiment file (replace spaces with tabs)
+log "Original experiment file: $EXP_FILE"
+normalize_tsv "$EXP_FILE" "$TMP_DIR/exp.normalized.tsv"
+log "Using normalized experiment file: $TMP_DIR/exp.normalized.tsv"
+
 # Create experiment queue
 exp_i=0
 while IFS=$'\t' read -r slot model backend draft_length dataset mode bsz prefix_profile num_total_runs; do
@@ -45,7 +45,7 @@ while IFS=$'\t' read -r slot model backend draft_length dataset mode bsz prefix_
     id=$(printf "t%03d" "$exp_i")
     echo -e "${id}\t${slot}\t${model}\t${backend}\t${draft_length}\t${dataset}\t${mode}\t${bsz}\t${prefix_profile}\t${num_total_runs}" \
         >> "${TMP_DIR}/${slot}.queue"
-done < "$NORMALIZED_EXP_FILE"
+done < "$TMP_DIR/exp.normalized.tsv"
 
 # Run worker
 run_worker() {
@@ -146,7 +146,7 @@ run_partition() {
 
 # Phase 0: Run 4 GPU experiments alone (highest priority)
 if [ -f "${TMP_DIR}/4g.queue" ]; then
-	wait_for_gpus_idle "0,1,2,3" "3m" "5m"
+	# wait_for_gpus_idle "0,1,2,3" "3m" "5m"
     log "Phase 0: running 4g tasks exclusively"
     run_worker 4g
 else

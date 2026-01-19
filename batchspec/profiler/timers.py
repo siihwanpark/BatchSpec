@@ -54,10 +54,6 @@ class NullProfiler:
         """Return no-op context manager."""
         return _NOOP
     
-    def set_step_seq_len(self, *args, **kwargs) -> None:
-        """No-op."""
-        pass
-    
     def set_step_tokens(self, *args, **kwargs) -> None:
         """No-op."""
         pass
@@ -113,7 +109,7 @@ class _CudaTimerCtx:
     
     def __exit__(self, exc_type, exc, tb):
         self.e.record()
-        self.prof._iter_events.append(("cuda", self.s, self.e, self.bucket))
+        self.prof._step_events.append(("cuda", self.s, self.e, self.bucket))
         return False
 
 
@@ -136,7 +132,7 @@ class _CpuTimerCtx:
         if self.prof.cfg.strict_sync:
             torch.cuda.synchronize()
         dt_ms = (time.perf_counter() - self.t0) * 1e3
-        self.prof._iter_events.append(("cpu", dt_ms, None, self.bucket))
+        self.prof._step_events.append(("cpu", dt_ms, None, self.bucket))
         return False
 
 
@@ -156,7 +152,7 @@ def _maybe_cuda_timer(bucket: str, need_model: bool = True):
     """
     prof = get_active_profiler()
     if (prof is None or prof.disabled or 
-        not prof._active_measure):
+        not prof._is_measuring):
         return _NOOP
     
     if need_model is True and not prof.cfg.model_profiling:
@@ -174,7 +170,7 @@ def _maybe_cpu_timer(bucket: str, need_engine: bool = True):
     """Return a CPU timer context or no-op."""
     prof = get_active_profiler()
     if (prof is None or prof.disabled or 
-        not prof._active_measure):
+        not prof._is_measuring):
         return _NOOP
     
     if need_engine and not prof.cfg.engine_profiling:

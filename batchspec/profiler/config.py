@@ -1,7 +1,7 @@
 """Profiler configuration and constants."""
 
-from dataclasses import dataclass, field
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Optional
 from types import SimpleNamespace
 
 
@@ -44,6 +44,7 @@ ENGINE_BUCKET_ORDER = [
     "collate_kv",
     "insert_kv",
     "delete_kv",
+    "update_output",
 ]
 
 
@@ -64,8 +65,6 @@ class ProfilerConfig:
     num_total_runs: int = 10             # total number of runs (only for reporting)
     print_per_run: bool = True           # print run summary
     run_name: Optional[str] = None       # folder name override
-    kv_len_reduce: str = "mean"          # one of {"mean","max","p50","p90","sum"}
-    kv_bins: List[int] = field(default_factory=lambda: [0, 512, 1024, 2048, 4096, 8192, 16384])
 
     @classmethod
     def from_args(cls, args: SimpleNamespace, prefix: str = "prof_") -> "ProfilerConfig":

@@ -11,7 +11,7 @@ if [ -n "${BATCHSPEC_UTILS_SH_LOADED:-}" ]; then
 fi
 BATCHSPEC_UTILS_SH_LOADED=1
 
-: "${BASE_CKPT_DIR:=/home/jovyan/sihwan-volume/checkpoints}"
+: "${BASE_CKPT_DIR:=/home/jovyan/checkpoints}"
 
 # =============================================================================
 # Logging helpers
@@ -113,6 +113,10 @@ get_backend_args() {
             echo "--drafter_name DeepSeek-R1-Distill-Llama-3.2-1B-Instruct --drafter_checkpoint_path ${base_ckpt_dir}/DeepSeek-R1-Distill-Llama-3.2-1B-Instruct/model.pth --draft_length ${draft_length}"
             ;;
 
+        ngram:Qwen3-8B|ngram:Qwen3-14B|ngram:DSL-8B)
+            echo "--max_ngram_size 4 --draft_length ${draft_length}"
+            ;;
+
         eagle:Qwen3-8B)
             echo "--eagle_name Qwen3-8B_eagle3 --eagle_checkpoint_path ${base_ckpt_dir}/Qwen3-8B_eagle3/model.pth --draft_length ${draft_length}"
             ;;
@@ -124,7 +128,7 @@ get_backend_args() {
             ;;
 
         magicdec:Qwen3-8B|magicdec:Qwen3-14B|magicdec:DSL-8B)
-            echo "--draft_length ${draft_length} --num_sink_tokens 16 --stream_budget 256"
+            echo "--draft_length ${draft_length} --num_sink_tokens 16 --stream_budget 512"
             ;;
 
         mtp:Qwen3-8B)
@@ -240,13 +244,12 @@ _on_signal() {
 
 # Normalize a TSV file (replace spaces with tabs)
 normalize_tsv() {
-    local src="$1"
+    local src="$1" out="$2"
     [ -f "$src" ] || { echo "normalize_tsv: file not found: $src" >&2; return 1; }
 
     local dir base out
     dir="$(dirname "$src")"
     base="$(basename "$src")"
-    out="${dir}/${base%.tsv}.normalized.tsv"
 
     python - <<'PY' "$src" "$out" 1>&2
 import re, sys

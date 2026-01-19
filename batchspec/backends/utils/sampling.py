@@ -113,3 +113,56 @@ def sample(
     
     samples = samples.reshape(bsz, seqlen).long()
     return samples
+
+def fix_invalid_draft_tokens(
+    draft_tokens: torch.Tensor,
+    draft_probs: torch.Tensor,
+):
+    """
+    Fix invalid draft tokens for speculative sampling.
+
+    Why this is needed:
+    - In speculative sampling, the drafter proposes tokens x ~ q(x),
+      and correctness requires q(x) > 0 for every sampled token.
+    - With approximate top-k/top-p sampling (e.g., FlashInfer),
+      it can rarely happen that a token outside the support
+      (q(x) == 0 after renormalization) is sampled.
+    - Such tokens break acceptance ratio computation and can
+      cause incorrect behavior or NaNs.
+
+    What this function does:
+    - If the sampled draft token has q(x) == 0,
+      replace it with argmax(q), which is guaranteed to lie
+      inside the support of the drafter distribution.
+    - Otherwise, keep the original sampled token unchanged.
+
+    This acts as a lightweight safety guard that only triggers
+    on rare sampler failures and minimally perturbs the algorithm.
+
+    Args:
+        draft_tokens: Sampled draft tokens. Shape: [bsz, seqlen]
+        draft_probs: Drafter probability distribution. Shape: [bsz, seqlen, vocab]
+
+    Returns:
+        Fixed draft tokens. Shape: [bsz, seqlen]
+    """
+
+    # Probability of the sampled draft token p(x)
+    sampled_prob = torch.gather(
+        draft_probs, dim=-1, index=draft_tokens.unsqueeze(-1)
+    ).squeeze(-1)  # [bsz, seqlen]
+
+    # Detect invalid samples: sampled token not in the support (p(x) == 0)
+    zero_mask = sampled_prob == 0
+
+    # Fast path: no invalid tokens
+    if not zero_mask.any():
+        return draft_tokens
+
+    # Fallback token: highest-probability token under p
+    argmax_tokens = draft_probs.argmax(dim=-1)  # [bsz, seqlen]
+
+    # Replace only invalid positions
+    fixed_tokens = torch.where(zero_mask, argmax_tokens, draft_tokens)
+
+    return fixed_tokens

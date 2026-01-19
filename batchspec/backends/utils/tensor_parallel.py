@@ -643,7 +643,7 @@ def apply_tp(model, rank_group: Sequence[int], group) -> None:
         _apply_tp_attn(block.attention, rank_group, model.config, group)
 
 
-def apply_tp_eagle(model, rank_group: Sequence[int], process_group) -> None:
+def apply_tp_eagle(model, rank_group: Sequence[int], group) -> None:
     """Apply tensor parallelism to EAGLE model.
     
     Similar to apply_tp but for EAGLE module structure.
@@ -651,7 +651,7 @@ def apply_tp_eagle(model, rank_group: Sequence[int], process_group) -> None:
     Args:
         model: EAGLE model
         rank_group: Sequence of ranks in this TP group
-        process_group: Process group for all-reduce
+        group: Process group for all-reduce
         
     Raises:
         ValueError: If heads not divisible by world size
@@ -686,14 +686,14 @@ def apply_tp_eagle(model, rank_group: Sequence[int], process_group) -> None:
         _linear_colwise(out, start, end)
 
     # Apply TP to EAGLE's FFN and attention
-    _apply_tp_ffn(model.feed_forward, rank_group, process_group)
-    _apply_tp_attn(model.attn, rank_group, model.config, process_group)
+    _apply_tp_ffn(model.feed_forward, rank_group, group)
+    _apply_tp_attn(model.attn, rank_group, model.config, group)
 
     # Track vocabulary range
     model.vocab_start = int(start)
     model.vocab_end = int(end)
 
     # Set distributed training attributes
-    model.process_group = process_group
-    model.world_size = dist.get_world_size(process_group)
-    model.rank = dist.get_rank(process_group)
+    model.process_group = group
+    model.world_size = dist.get_world_size(group)
+    model.rank = dist.get_rank(group)

@@ -11,7 +11,7 @@ from batchspec.backends import (
     EAGLEChainEngine, MagicDecEngine, MTPEngine
 )
 from batchspec.profiler import Profiler, register_active_profiler, release_active_profiler
-from batchspec.runner import Runner, BatchSampler, load_benchmark_dataset
+from batchspec.runner import Runner, BatchSampler, StrictPrefixBatchSampler, load_benchmark_dataset
 from batchspec.args import parse_args
 
    
@@ -83,10 +83,6 @@ def main():
         else:
             raise ValueError(f"Unsupported backend: {args.backend}")
 
-        # Initialize the caches with the maximum prefix length
-        print(f"Initializing the Caches with the maximum prefix length: {max(args.prefix_len_list)}")
-        args.max_len = max(args.prefix_len_list) + (args.max_gen_len * 3)  # For the initialization of caches
-
         if args.profiling:
             # Initialize the profiler
             prof = Profiler(runner_args=args)
@@ -95,15 +91,24 @@ def main():
             src_rank = args.rank_group[0] if (args.rank_group and len(args.rank_group) > 0) else 0
             if check_path_and_broadcast(os.path.join(prof.out_dir, "report.md"), rank, src_rank):
                 return
-            
+
+        # Initialize the caches with the maximum prefix length
+        max_gen_per_step = 1 if args.backend == "standard" else args.draft_length + 1
+        args.max_len = max(args.prefix_len_list) + (args.max_gen_len * max_gen_per_step)  # For the initialization of caches
+        print(f"Initializing the Caches with the maximum prefix length: {max(args.prefix_len_list)} + upper bound of the generation length: {args.max_gen_len * max_gen_per_step}")
+        
+        batch_sampler = BatchSampler(dataset=dataset, tokenizer=tokenizer, batch_size=args.batch_size, 
+            seq_len=max(args.prefix_len_list), margin_before_eos=args.max_gen_len * max_gen_per_step, pretokenize=True, seed=args.seed)
+        # batch_sampler = StrictPrefixBatchSampler(dataset=dataset, tokenizer=tokenizer, batch_size=args.batch_size, 
+        #     seq_len=max(args.prefix_len_list), margin_before_eos=3 * args.max_gen_len, pretokenize=True, seed=args.seed)
+        
+        runner = Runner(args, engine, tokenizer, batch_sampler=batch_sampler)
+        runner.setup(process_group)
+
+        if args.profiling:
             register_active_profiler(prof)
             prof.attach_model(engine.model, use_gated_lora=args.backend == "mtp")
             prof.attach_engine(engine)
-
-        batch_sampler = BatchSampler(dataset=dataset, tokenizer=tokenizer, batch_size=args.batch_size, 
-            seq_len=max(args.prefix_len_list), margin_before_eos=5 * args.max_gen_len, pretokenize=True, seed=args.seed)
-        runner = Runner(args, engine, tokenizer, batch_sampler=batch_sampler)
-        runner.setup(process_group)
 
         for run_idx in tqdm(range(args.num_total_runs), total=args.num_total_runs, desc="Running benchmark"):
             print("\n" + "="*50 + f" Run {run_idx} Start " + "="*50)

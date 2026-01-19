@@ -17,7 +17,7 @@ def is_profiler_active(profiler: "Profiler") -> bool:
     """Check if the profiler is active."""
     if isinstance(profiler, NullProfiler): return False
     if profiler.disabled: return False
-    if not profiler._active_measure: return False
+    if not profiler._is_measuring: return False
     return True
 
 
@@ -133,7 +133,7 @@ def _wrap_module_forward(module: nn.Module, bucket: str) -> None:
         s.record()
         out = orig_fwd(*args, **kwargs)
         e.record()
-        prof._iter_events.append(("cuda", s, e, bucket))
+        prof._step_events.append(("cuda", s, e, bucket))
         return out
     
     module.forward = wrapped
@@ -159,7 +159,7 @@ def _patch_communication_ops() -> None:
             s.record()
             out = orig(*args, **kwargs)
             e.record()
-            prof._iter_events.append(("cuda", s, e, "communication"))
+            prof._step_events.append(("cuda", s, e, "communication"))
             return out
         
         setattr(dist, name, wrapped)
@@ -186,20 +186,24 @@ def attach_engine_hooks(profiler: "Profiler", engine_obj: Any) -> None:
         return
     
     name_map = {
+        # Standard
         "prefill": "prefill",
-        "pre_prefill": "pre_prefill",
         "decode": "decode",
-        "pre_decode": "pre_decode",
+        "budget_forcing": "budget_forcing",
+
+        # Standalone, EAGLE, MagicDec, MTP
         "draft": "draft",
-        "pre_draft": "pre_draft",
+        "evaluate_posterior": "evaluate_posterior",
+
+        # MTP
         "draft_and_verify": "draft_and_verify",
-        "pre_draft_and_verify": "pre_draft_and_verify",
         "sampler_draft": "sampler_draft",
 
         "interleave_mask_tokens": "interleave_mask_tokens",
-        "evaluate_posterior": "evaluate_posterior",
+        
         "collate_kv": "collate_accepted_kv_cache",
-        "force_budget": "force_budget",
+        "update_output": "update_output",
+        
     }
     
     for method_name, short in name_map.items():
@@ -224,7 +228,7 @@ def _wrap_engine_method(obj: Any, method_name: str, bucket: str) -> None:
             return orig(*args, **kwargs)
         finally:
             dt_ms = (time.perf_counter() - t0) * 1e3
-            prof._iter_events.append(("cpu", dt_ms, None, bucket))
+            prof._step_events.append(("cpu", dt_ms, None, bucket))
     
     setattr(obj, method_name, wrapped)
 

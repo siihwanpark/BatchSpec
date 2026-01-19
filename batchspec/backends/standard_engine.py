@@ -201,11 +201,13 @@ class StandardEngine(BaseEngine):
         # Define local variables
         model_steps = 0
         num_generated_tokens = 0
-        output = torch.zeros(bsz, max_gen_len+1, device=device, dtype=torch.long)
+        output = torch.zeros(bsz, max_gen_len, device=device, dtype=torch.long)
 
         # Prefill
         next_tokens = self.prefill(input_ids=input_ids)
         output[:, 0] = next_tokens[:, 0]
+        num_generated_tokens += 1
+        model_steps += 1
         
         # Initialize the profiler (NullProfiler when profiling=False)
         profiler = get_active_profiler()
@@ -214,22 +216,20 @@ class StandardEngine(BaseEngine):
         terminal = False
         while num_generated_tokens < max_gen_len and not terminal:
             with profiler.step_timing_ctx():
-                profiler.set_step_seq_len(self.kv_page_table.cachelens)
-
-                # Decode
                 next_tokens = self.decode(input_ids=next_tokens)
                 profiler.set_step_tokens(bsz)
-                
+            
             # Force budget
             if force_budget:
-                replace_mask = torch.isin(next_tokens[:, 0], suppress_token_ids)
-                num_replace = replace_mask.sum().item()
-                if num_replace > 0:
-                    rand_idx = torch.randint(0, replace_token_ids.shape[0], (num_replace,), device=self.device)
-                    next_tokens[replace_mask, 0] = replace_token_ids[rand_idx]
+                with cpu_bucket_timer("budget_forcing"):
+                    replace_mask = torch.isin(next_tokens[:, 0], suppress_token_ids)
+                    num_replace = replace_mask.sum().item()
+                    if num_replace > 0:
+                        rand_idx = torch.randint(0, replace_token_ids.shape[0], (num_replace,), device=self.device)
+                        next_tokens[replace_mask, 0] = replace_token_ids[rand_idx]
 
             # Update output
-            output[:, num_generated_tokens+1] = next_tokens[:, 0]
+            output[:, num_generated_tokens] = next_tokens[:, 0]
             num_generated_tokens += 1
             model_steps += 1
             

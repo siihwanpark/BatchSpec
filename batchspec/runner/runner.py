@@ -125,7 +125,7 @@ class Runner:
             # Call engine.generate()
             generate_params = {'input_ids': current_input_ids, 'max_gen_len': self.args.max_gen_len, 'prefix_len': prefix_len}
             if self.args.backend == "ngram":
-                generate_params['full_input_ids'] = input_ids[:, 0:end_idx]
+                generate_params['full_input_ids'] = input_ids[:, :end_idx]
             
             output, num_generated_tokens, model_steps = self.engine.generate_batch(**generate_params)
             
@@ -161,7 +161,7 @@ class Runner:
                 f"(Total generated tokens: {num_generated_tokens[0]}, "
                 f"mean generated tokens per step: {mean_tokens_per_step:.2f})")
         decoded = self.engine.tokenizer.decode(
-            output[0, :num_generated_tokens[0]+1], 
+            output[0, :num_generated_tokens[0]], 
             skip_special_tokens=True
         )
         print(decoded)

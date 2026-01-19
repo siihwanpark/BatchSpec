@@ -8,12 +8,13 @@ This module provides:
 """
 
 from .runner import Runner
-from .batch_sampler import BatchSampler
+from .batch_sampler import BatchSampler, StrictPrefixBatchSampler
 from .dataset_utils import load_dataset, load_benchmark_dataset
 
 __all__ = [
     "Runner",
     "BatchSampler",
+    "StrictPrefixBatchSampler",
     "load_dataset",
     "load_benchmark_dataset",
 ]

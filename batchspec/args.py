@@ -136,9 +136,10 @@ class StandaloneArguments:
 class NGramArguments:
     """N-gram-specific arguments."""
     max_ngram_size: int = field(
-        default=3,
+        default=4,
         metadata={"help": "Maximum N-gram size for the N-gram draft."}
     )
+
 
 @dataclass
 class EAGLEArguments:
@@ -165,7 +166,7 @@ class MagicDecArguments:
         metadata={"help": "Number of sink tokens for the MagicDec drafter."}
     )
     stream_budget: int = field(
-        default=1024,
+        default=512,
         metadata={"help": "Stream budget for the MagicDec drafter."}
     )
 

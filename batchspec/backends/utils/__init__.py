@@ -3,13 +3,14 @@ import numpy as np
 import torch
 
 from .paging import PageManager
-from .sampling import get_sampling_probs, sample
+from .sampling import get_sampling_probs, sample, fix_invalid_draft_tokens
 from .tensor_parallel import init_dist, apply_tp, apply_tp_eagle
 
 __all__ = [
     "PageManager",
     "get_sampling_probs",
     "sample",
+    "fix_invalid_draft_tokens",
     "init_dist",
     "apply_tp",
     "apply_tp_eagle",
