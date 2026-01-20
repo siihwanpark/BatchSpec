@@ -9,7 +9,6 @@ source "${SCRIPT_DIR}/utils.sh"
 # Register cleanup functions
 enable_graceful_exit
 register_cleanup 'echo "[CLEANUP] releasing resources..."'
-register_cleanup 'pkill -P $$ || true'
 
 # Set experiment configurations
 EXP_FILE="${1:-${SCRIPT_DIR}/exp.tsv}"

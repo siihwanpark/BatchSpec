@@ -15,7 +15,6 @@ export TORCH_SYMM_MEM_DISABLE_MULTICAST=1 # Due to well-known issues with PyTorc
 # Register cleanup functions
 enable_graceful_exit
 register_cleanup 'echo "[CLEANUP] releasing resources..."'
-register_cleanup 'pkill -P $$ || true'
 
 # Set CUDA architecture list
 set_torch_cuda_arch_list 0

@@ -238,7 +238,10 @@ enable_graceful_exit() {
 # Handle signals
 _on_signal() {
     local sig="$1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: Caught ${sig}, shutting down gracefully..." >&2
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: Caught ${sig}, killing process group..." >&2
+
+    # Kill the whole process group to avoid orphan processes.
+    kill -- -$$ 2>/dev/null || true
     exit 130
 }
 
