@@ -29,6 +29,13 @@ for dataset in AIME2025 MMLU-Pro; do
                 else
                     prefix_profile="32k"
                 fi
+                
+                # ngram
+                append_row "4g" "$model" "ngram" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "4g" "$model" "ngram" 5 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "4g" "$model" "ngram" 10 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "4g" "$model" "ngram" 20 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+
                 for backend in eagle magicdec standalone; do
                     if [ $backend == "standalone" ]; then
                         if [ $prefix_profile == "16k" ]; then
@@ -42,10 +49,6 @@ for dataset in AIME2025 MMLU-Pro; do
                     append_row "4g" "$model" "$backend" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
                     append_row "4g" "$model" "$backend" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
                 done
-                append_row "4g" "$model" "ngram" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "4g" "$model" "ngram" 5 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "4g" "$model" "ngram" 10 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "4g" "$model" "ngram" 20 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
             done
         done
     done
@@ -61,7 +64,12 @@ for dataset in AIME2025 MMLU-Pro; do
         for mode in sampling; do
             for bsz in "${bsz_list[@]}"; do
                 prefix_profile="32k"
-
+                
+                append_row "2g0" "$model" "ngram" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "2g1" "$model" "ngram" 5 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "2g1" "$model" "ngram" 10 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "2g0" "$model" "ngram" 20 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                
                 for backend in eagle magicdec standalone; do
                     if [ $backend == "standalone" ]; then
                         prefix_profile="16k"
@@ -71,11 +79,6 @@ for dataset in AIME2025 MMLU-Pro; do
                     append_row "2g1" "$model" "$backend" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
                     append_row "2g0" "$model" "$backend" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
                 done
-                append_row "2g0" "$model" "ngram" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "2g1" "$model" "ngram" 5 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "2g1" "$model" "ngram" 10 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "2g0" "$model" "ngram" 20 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-        
             done
         done
     done
@@ -91,6 +94,11 @@ for dataset in AIME2025 MMLU-Pro; do
         for mode in sampling; do
             for bsz in "${bsz_list[@]}"; do
                 prefix_profile="32k"
+                
+                append_row "1g0" "$model" "ngram" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "1g1" "$model" "ngram" 5 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "1g2" "$model" "ngram" 10 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
+                append_row "1g3" "$model" "ngram" 20 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
 
                 for backend in eagle magicdec standalone; do
                     if [ $backend == "standalone" ]; then
@@ -101,14 +109,9 @@ for dataset in AIME2025 MMLU-Pro; do
                     append_row "1g2" "$model" "$backend" 3 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
                     append_row "1g3" "$model" "$backend" 4 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
                 done
-                append_row "1g0" "$model" "ngram" 2 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "1g1" "$model" "ngram" 5 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "1g2" "$model" "ngram" 10 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
-                append_row "1g3" "$model" "ngram" 20 "$dataset" "$mode" "$bsz" "$prefix_profile" 6
             done
         done
     done
-
 done
 
 echo "Wrote: $OUT"

@@ -211,7 +211,5 @@ tmp/
 logs/
 benchmark_data/
 profiler_out/
+profiler_summary/
 ngram_simulation_results/
-
-# Experiment files
-*.normalized.tsv

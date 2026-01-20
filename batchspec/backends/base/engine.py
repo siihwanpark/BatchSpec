@@ -203,6 +203,10 @@ class BaseEngine(AttentionWrapperMixin):
             
             last_valid_idx = ((output_tokens != -1).to(torch.long) * torch.arange(output_tokens.size(1), device=output_tokens.device)).argmax(dim=1, keepdim=True)
             bonus_tokens = output_tokens.gather(1, last_valid_idx)
+
+            # Check whether an EOS token has been accepted.
+            # Since `output_tokens` contains accepted draft tokens and -1 for rejected ones,
+            # it is sufficient to check whether `eos_token_id` appears in `output_tokens`.
             if hasattr(self, 'draft_eos_token_id'):
                 # Only for EAGLE
                 eos_accepted = (self.draft_eos_token_id == output_tokens).any(dim=1, keepdim=True)
