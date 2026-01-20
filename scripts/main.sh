@@ -10,7 +10,7 @@ source "${SCRIPT_DIR}/utils.sh"
 export PYTHONWARNINGS="ignore::UserWarning,ignore::FutureWarning,ignore::DeprecationWarning"
 export ENABLE_INTRA_NODE_COMM=1
 export FLASHINFER_JIT_VERBOSE=1
-export TORCH_SYMM_MEM_DISABLE_MULTICAST=1 # Due to well-known issues with PyTorch
+export TORCH_SYMM_MEM_DISABLE_MULTICAST=1 # Due to well-known issue with PyTorch
 
 # Register cleanup functions
 enable_graceful_exit

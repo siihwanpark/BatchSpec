@@ -358,6 +358,7 @@ class StandaloneEngine(BaseEngine):
                     bonus_tokens, accept_nums, eos_accepted = self.evaluate_posterior(tokens_buffer[:, 1:], target_logits.argmax(dim=-1))
                 else:
                     bonus_tokens, accept_nums, eos_accepted = self.evaluate_posterior(tokens_buffer[:, 1:], target_logits, logits_buffer)
+                    bonus_tokens, accept_nums = self.sampling_fault_handler(tokens_buffer, bonus_tokens, accept_nums)
                 
                 # Force budget
                 if force_budget:

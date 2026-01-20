@@ -1,7 +1,6 @@
 import os
 from tqdm import tqdm
 
-import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer
 
@@ -88,8 +87,7 @@ def main():
             prof = Profiler(runner_args=args)
 
             # Skip if the profiler report already exists
-            src_rank = args.rank_group[0] if (args.rank_group and len(args.rank_group) > 0) else 0
-            if check_path_and_broadcast(os.path.join(prof.out_dir, "report.md"), rank, src_rank):
+            if check_path_and_broadcast(os.path.join(prof.out_dir, "report.md"), rank):
                 return
 
         # Initialize the caches with the maximum prefix length
@@ -99,8 +97,6 @@ def main():
         
         batch_sampler = BatchSampler(dataset=dataset, tokenizer=tokenizer, batch_size=args.batch_size, 
             seq_len=max(args.prefix_len_list), margin_before_eos=args.max_gen_len * max_gen_per_step, pretokenize=True, seed=args.seed)
-        # batch_sampler = StrictPrefixBatchSampler(dataset=dataset, tokenizer=tokenizer, batch_size=args.batch_size, 
-        #     seq_len=max(args.prefix_len_list), margin_before_eos=3 * args.max_gen_len, pretokenize=True, seed=args.seed)
         
         runner = Runner(args, engine, tokenizer, batch_sampler=batch_sampler)
         runner.setup(process_group)

@@ -52,8 +52,89 @@ set_torch_cuda_arch_list() {
 }
 
 # =============================================================================
-# Model path helpers
+# Experiment Argument helpers
 # =============================================================================
+
+# Get prefix length list
+prefix_list_for() {
+  local profile="$1"
+
+  # Special-case for quick debugging
+  #   prefix_list_for "debug"
+  #   -> 1024 2048
+  if [ "$profile" = "debug" ]; then
+    echo "1024 2048"
+    return 0
+  fi
+
+  # Expect format "<N>k" (e.g., 3k, 7k, 12k, 25k)
+  # Convert to max prefix length in tokens (N * 1024)
+  if [[ ! "$profile" =~ ^([0-9]+)k$ ]]; then
+    die "Unknown prefix_profile format: $profile (expected e.g. 7k, 15k, 32k, debug)"
+    return 1
+  fi
+
+  local k="${BASH_REMATCH[1]}"
+  local max=$((k * 1024))  # Upper bound (exclusive)
+
+  # Policy:
+  #   - The returned prefix list always EXCLUDES `max`
+  #   - Step size depends on the range of `max`
+  #
+  #   1) max <=  8k  : 1k step
+  #   2) 9k ~ 16k    : 2k step (after 1k, 2k anchors)
+  #   3) 17k ~ 32k   : anchors + 4k step
+  #
+  # Examples:
+  #   prefix_list_for "3k"
+  #     -> 1024 2048
+  #
+  #   prefix_list_for "7k"
+  #     -> 1024 2048 3072 4096 5120 6144
+  #
+  #   prefix_list_for "12k"
+  #     -> 1024 2048 4096 6144 8192 10240
+  #
+  #   prefix_list_for "13k"
+  #     -> 1024 2048 4096 6144 8192 10240 12288
+  #
+  #   prefix_list_for "18k"
+  #     -> 1024 2048 4096 8192 12288 16384
+  #
+  #   prefix_list_for "25k"
+  #     -> 1024 2048 4096 8192 12288 16384 20480 24576
+  #
+  #   prefix_list_for "30k"
+  #     -> 1024 2048 4096 8192 12288 16384 20480 24576 28672
+
+  local -a out=()
+
+  if [ "$max" -le 8192 ]; then
+    # <= 8k: uniform 1k increments
+    for ((v=1024; v<max; v+=1024)); do
+      out+=("$v")
+    done
+
+  elif [ "$max" -le 16384 ]; then
+    # 9k ~ 16k:
+    #   keep fine granularity early, then switch to 2k steps
+    out+=(1024 2048)
+    for ((v=4096; v<max; v+=2048)); do
+      out+=("$v")
+    done
+
+  else
+    # 17k ~ 32k:
+    #   coarse-grained prefixes for long-context regimes
+    out+=(1024 2048 4096 8192 12288 16384)
+    for ((v=20480; v<max; v+=4096)); do
+      out+=("$v")
+    done
+  fi
+
+  # Print as space-separated list (for array expansion)
+  echo "${out[*]}"
+}
 
 # Get model name, model path, and tokenizer path
 # Returns: <model_name> <model_path> <tokenizer_path>
@@ -242,7 +323,6 @@ _on_signal() {
 
     # Kill the whole process group to avoid orphan processes.
     kill -- -$$ 2>/dev/null || true
-    exit 130
 }
 
 # Normalize a TSV file (replace spaces with tabs)

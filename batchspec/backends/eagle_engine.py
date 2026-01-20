@@ -376,9 +376,10 @@ class EAGLEChainEngine(BaseEngine):
                     # ========== Use Draft Vocabulary ===========
                     # Project the target logits to the draft vocabulary
                     target_logits = target_logits[..., target_to_draft] # [bsz, k+1, draft_vocab_size]
-                    draft_tokens = self.model.eagle.convert_target_to_draft(tokens_buffer[:, 1:]) # [bsz, k]
+                    draft_tokens_buffer = self.model.eagle.convert_target_to_draft(tokens_buffer) # [bsz, k+1]
 
-                    bonus_tokens, accept_nums, eos_accepted = self.evaluate_posterior(draft_tokens, target_logits, logits_buffer)
+                    bonus_tokens, accept_nums, eos_accepted = self.evaluate_posterior(draft_tokens_buffer[:, 1:], target_logits, logits_buffer)
+                    bonus_tokens, accept_nums = self.sampling_fault_handler(draft_tokens_buffer, bonus_tokens, accept_nums)
                     # ==== Convert back to Target Vocabulary ====
                     bonus_tokens = self.model.eagle.convert_draft_to_target(bonus_tokens) # [bsz, 1]
                 

@@ -25,22 +25,18 @@ log "Auto-detected CUDA compute capability: ${TORCH_CUDA_ARCH_LIST}"
 # Model Configuration
 base_ckpt_dir=/home/jovyan/checkpoints
 
-model_name=Qwen3-8B
-model_path=$base_ckpt_dir/Qwen3-8B/model.pth
-tokenizer_path=$base_ckpt_dir/Qwen3-8B
+model_name=Qwen3-14B
+model_path=$base_ckpt_dir/Qwen3-14B/model.pth
+tokenizer_path=$base_ckpt_dir/Qwen3-14B
 
-# model_name=DeepSeek-R1-Distill-Llama-8B
-# model_path=$base_ckpt_dir/DeepSeek-R1-Distill-Llama-8B/model.pth
-# tokenizer_path=$base_ckpt_dir/DeepSeek-R1-Distill-Llama-8B
+nproc_per_node=4
+rank_group="0 1 2 3"
+export CUDA_LAUNCH_BLOCKING=1
 
-nproc_per_node=1
-rank_group="0"
-
-export CUDA_VISIBLE_DEVICES=3
-
-prefix_len_list=(1024 2048 4096 8192 12288)
+prefix_len_list=(1024 2048 4096 6144 8192 10240 12288 14336)
 # extra_args=(--eagle_name Qwen3-8B_eagle3 --eagle_checkpoint_path $base_ckpt_dir/Qwen3-8B_eagle3/model.pth --draft_length 4)
 # extra_args=(--max_ngram_size 3 --draft_length 10)
+extra_args=(--drafter_name Qwen3-0.6B --drafter_checkpoint_path $base_ckpt_dir/Qwen3-0.6B/model.pth --draft_length 3)
 torchrun --standalone --nproc_per_node=$nproc_per_node -m batchspec.run\
 	--backend standard\
 	--checkpoint_path $model_path\
@@ -49,12 +45,11 @@ torchrun --standalone --nproc_per_node=$nproc_per_node -m batchspec.run\
 	--rank_group $rank_group\
 	--dataset AIME2025\
 	--dtype bfloat16\
-	--batch_size 16 --prefix_len_list ${prefix_len_list[@]} --max_gen_len 128\
+	--batch_size 64 --prefix_len_list ${prefix_len_list[@]} --max_gen_len 128\
 	--temperature 0.0 --top_p 0.95 --top_k 20 --force_budget\
 	--printoutput\
 	--profiling\
-	--num_total_runs 3\
-	--attn_buffer_size_mb 768\
+	--num_total_runs 6\
 	"${extra_args[@]}"
 exit 0
 
