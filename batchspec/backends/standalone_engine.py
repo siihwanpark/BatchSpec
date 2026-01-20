@@ -405,7 +405,7 @@ class StandaloneEngine(BaseEngine):
                 if (not force_budget) and eos_accepted_or_generated.any():
                     # On the terminal step, we need to write the bonus tokens to the output
                     terminal = True
-                    output[batch_indices, num_generated_tokens] = bonus_tokens[:, 0]
+                    output[batch_indices, num_generated_tokens] = bonus_tokens[:, 0].long()
                     num_generated_tokens += 1
         
         profiler.end_run()

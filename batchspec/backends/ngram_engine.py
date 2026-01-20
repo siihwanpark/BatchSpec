@@ -352,7 +352,7 @@ class NGramDraftEngine(BaseEngine):
 
                 # Prepare inputs for the next iteration
                 tokens_buffer[:, :1] = bonus_tokens
-                output[batch_indices, num_generated_tokens] = bonus_tokens[:, 0]
+                output[batch_indices, num_generated_tokens] = bonus_tokens[:, 0].long()
                 num_generated_tokens += 1
                 
                 # Check the terminal condition
@@ -360,8 +360,6 @@ class NGramDraftEngine(BaseEngine):
                 if (not force_budget) and eos_accepted_or_generated.any():
                     # On the terminal step, we need to write the bonus tokens to the output
                     terminal = True
-                    output[batch_indices, num_generated_tokens] = bonus_tokens[:, 0]
-                    num_generated_tokens += 1
         
         profiler.end_run()
         self.kv_page_table.delete_kv(self.kv_page_table.cachelens - prefix_len) # revert the KV cache to proceed next run with longer prefix
