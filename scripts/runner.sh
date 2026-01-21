@@ -17,13 +17,21 @@ EXP_FILE="${1:-${SCRIPT_DIR}/exp.tsv}"
 # Define slot configurations
 # "GPU_ids|nproc_per_node|rank_group"
 declare -A SLOT
-SLOT[4g]="0,1,2,3|4|0 1 2 3"
+SLOT[8g]="0,1,2,3,4,5,6,7|8|0 1 2 3 4 5 6 7"
+SLOT[4g0]="0,1,2,3|4|0 1 2 3"
+SLOT[4g1]="4,5,6,7|4|0 1 2 3"
 SLOT[2g0]="0,1|2|0 1"
 SLOT[2g1]="2,3|2|0 1"
+SLOT[2g2]="4,5|2|0 1"
+SLOT[2g3]="6,7|2|0 1"
 SLOT[1g0]="0|1|0"
 SLOT[1g1]="1|1|0"
 SLOT[1g2]="2|1|0"
 SLOT[1g3]="3|1|0"
+SLOT[1g4]="4|1|0"
+SLOT[1g5]="5|1|0"
+SLOT[1g6]="6|1|0"
+SLOT[1g7]="7|1|0"
 
 # Create temporary directory
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -143,27 +151,71 @@ run_partition() {
 	log "Partition done: $part_name"
 }
 
-# Phase 0: Run 4 GPU experiments alone (highest priority)
-if [ -f "${TMP_DIR}/4g.queue" ]; then
-	# wait_for_gpus_idle "0,1,2,3" "3m" "5m"
-    log "Phase 0: running 4g tasks exclusively"
-    run_worker 4g
+# -------------------------
+# 8-GPU Scheduling Phases
+# -------------------------
+
+# Phase 0: Run 8 GPU experiments alone (highest priority)
+if [ -f "${TMP_DIR}/8g.queue" ]; then
+    log "Phase 0: running 8g tasks exclusively"
+    run_worker 8g
 else
-    log "Phase 0: no 4g tasks (skip)"
+    log "Phase 0: no 8g tasks (skip)"
 fi
 
-# Phase 1: Run two independent partitions concurrently
-#   - pair01: 2g0 then (1g0,1g1) in parallel
-#   - pair23: 2g1 then (1g2,1g3) in parallel
-log "Phase 1: running pair01 and pair23 concurrently"
+# Run a half partition (either GPUs 0-3 or GPUs 4-7)
+run_half() {
+    local half_name="$1"; shift
+    local four_g_slot="$1"; shift
+    local part_a_name="$1"; shift
+    local part_a_2g="$1"; shift
+    local part_a_1g1="$1"; shift
+    local part_a_1g2="$1"; shift
+    local part_b_name="$1"; shift
+    local part_b_2g="$1"; shift
+    local part_b_1g1="$1"; shift
+    local part_b_1g2="$1"; shift
 
-run_partition "pair01" 2g0 1g0 1g1 &
-pid01=$!
+    log "Half start: $half_name (4g=$four_g_slot, parts=$part_a_name/$part_b_name)"
 
-run_partition "pair23" 2g1 1g2 1g3 &
-pid23=$!
+    # Step 1) Run 4g slot first (exclusive within this half)
+    if [ -f "${TMP_DIR}/${four_g_slot}.queue" ]; then
+        log "Half $half_name: running $four_g_slot first"
+        run_worker "$four_g_slot"
+    else
+        log "Half $half_name: no queue for $four_g_slot (skip)"
+    fi
 
-wait "$pid01"
-wait "$pid23"
+    # Step 2) Then run two partitions concurrently within this half
+    log "Half $half_name: running $part_a_name and $part_b_name concurrently"
+    run_partition "$part_a_name" "$part_a_2g" "$part_a_1g1" "$part_a_1g2" &
+    local pid_a=$!
+
+    run_partition "$part_b_name" "$part_b_2g" "$part_b_1g1" "$part_b_1g2" &
+    local pid_b=$!
+
+    wait "$pid_a"
+    wait "$pid_b"
+
+    log "Half done: $half_name"
+}
+
+# Phase 1+2 merged: run left-half and right-half concurrently
+#   Left GPUs 0-3: 4g0 -> (pair01, pair23)
+#   Right GPUs 4-7: 4g1 -> (pair45, pair67)
+log "Phase 1+2: running left-half and right-half concurrently"
+
+run_half "left"  4g0 \
+    "pair01" 2g0 1g0 1g1 \
+    "pair23" 2g1 1g2 1g3 &
+pid_left=$!
+
+run_half "right" 4g1 \
+    "pair45" 2g2 1g4 1g5 \
+    "pair67" 2g3 1g6 1g7 &
+pid_right=$!
+
+wait "$pid_left"
+wait "$pid_right"
 
 log "All experiments completed."

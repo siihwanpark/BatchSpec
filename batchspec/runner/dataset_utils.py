@@ -28,7 +28,7 @@ PROMPT_KEY_DICT = {
     "GPQA-Diamond": "Question",
 }
 
-BENCHMARK_DATASET_BASE_DIR = "/home/jovyan/BatchSpec/benchmark_data/responses"
+BENCHMARK_DATASET_BASE_DIR = "/workspace/BatchSpec/benchmark_data/responses"
 
 
 def load_dataset(tokenizer, dataset_name, num_samples=None, num_questions_in_prompt=1):

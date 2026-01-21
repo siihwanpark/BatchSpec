@@ -329,7 +329,7 @@ class EAGLEChainEngine(BaseEngine):
         # Prefill
         next_tokens, hidden_states = self.prefill(input_ids)
         tokens_buffer[:, :1] = next_tokens
-
+        
         # SANITY CHECK: The KV cache length must be equal to the prefix length
         assert torch.all(self.kv_page_table.cachelens == prefix_len), "The target model's KV cache length must be equal to the prefix length"
         assert torch.all(self.eagle_kv_page_table.cachelens == prefix_len-1), "The drafter's KV cache length must be equal to the prefix length minus 1"

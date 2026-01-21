@@ -8,9 +8,7 @@ source "${SCRIPT_DIR}/utils.sh"
 
 # Set environment variables
 export PYTHONWARNINGS="ignore::UserWarning,ignore::FutureWarning,ignore::DeprecationWarning"
-export ENABLE_INTRA_NODE_COMM=1
 export FLASHINFER_JIT_VERBOSE=1
-export TORCH_SYMM_MEM_DISABLE_MULTICAST=1 # Due to well-known issue with PyTorch
 
 # Register cleanup functions
 enable_graceful_exit
@@ -110,10 +108,19 @@ prefix_list_for() {
   local profile="$1"
   case "$profile" in
     8k)
-      echo "1024 2048 3072 4096 5120 6144 7168"
+      echo "1024 2048 4096 6144"
+      ;;
+    12k)
+      echo "1024 2048 4096 8192"
       ;;
     16k)
-      echo "1024 2048 4096 6144 8192 10240 12288 14336"
+      echo "1024 2048 4096 8192 12288"
+      ;;
+    24k)
+      echo "1024 2048 4096 8192 12288 16384 20480"
+      ;;
+    28k)
+      echo "1024 2048 4096 8192 12288 16384 20480 24576"
       ;;
     32k)
       echo "1024 2048 4096 8192 12288 16384 20480 24576 28672"
