@@ -157,7 +157,7 @@ log "RUN: model=$MODEL backend=$BACKEND draft_length=$DRAFT_LENGTH dataset=$DATA
 log "EXTRA_ARGS: $EXTRA_ARGS"
 
 # Run benchmark
-torchrun --standalone --nproc_per_node="$NPROC" -m batchspec.run \
+torchrun --standalone --nproc_per_node="$NPROC" -m batchspec.run_bench \
   --backend "$BACKEND" \
   --checkpoint_path "$model_path" \
   --tokenizer_path "$tokenizer_path" \

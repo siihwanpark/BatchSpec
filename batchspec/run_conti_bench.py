@@ -70,10 +70,6 @@ def main():
 
         # Setup the experiment configuration
         exp_config = {
-            'type': args.exp_type,
-            'prefill_ratio': args.prefill_ratio,
-            'prefill_target_len': args.prefill_target_len,
-            'decode_start_len': args.decode_start_len,
             'short_ratio': args.short_ratio,
             'short_target_len': args.short_target_len,
             'long_target_len': args.long_target_len,

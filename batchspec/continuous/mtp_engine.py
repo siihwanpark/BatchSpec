@@ -15,9 +15,10 @@ from batchspec.backends import MTPEngine
 from batchspec.backends.utils import get_sampling_probs, sample, apply_tp
 from batchspec.models import get_model, LoRAConfig
 from batchspec.profiler import get_active_profiler, cpu_bucket_timer
-from .base import MTPScheduler, SchedulerTracer, BatchPack, Sequence, MTPBatchBuilderMixin
+from .base import (
+    Sequence, Status, BatchPack, MTPBatchBuilderMixin, MTPScheduler, SchedulerTracer, PrefillScheduler,
+)
 
-import time
 
 class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
     """MTP engine for self-speculative decoding with multi-token prediction (Continuous version)."""
@@ -110,7 +111,7 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
         return logits, hidden_states
     
 
-    def generate(self, sequences: List[Sequence]):
+    def generate(self, sequences: List[Sequence], clear_kv: bool = True):
         """
         Generate tokens from prompts.
 
@@ -121,10 +122,11 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
             List[Sequence], the completed sequences.
         """
         # Clear KV cache and reset steps counter
-        self.kv_page_table.clear_kv(self.model)
         steps = 0
         draft_len = self.draft_length
-
+        if clear_kv:
+            self.kv_page_table.clear_kv(self.model)
+        
         # Add sequences to the scheduler
         self.scheduler.add_sequences(sequences)
         
@@ -158,7 +160,10 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
                 # Record the mean sequence length in this step
                 cachelens = self.kv_page_table.cachelens
                 mean_seqlen = cachelens[cachelens > 16].float().mean().item() if (cachelens > 16).any() else 0.0
+                seqlen_std = cachelens[cachelens > 16].float().std().item() if (cachelens > 16).any() else 0.0
+                
                 profiler.set_step_mean_seqlen(mean_seqlen)
+                profiler.set_step_seqlen_std(seqlen_std)
 
                 # Build the batch and forward the model
                 prev_cachelens = self.kv_page_table.cachelens.clone()
@@ -252,9 +257,7 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
                 with cpu_bucket_timer("engine.process_results"):
                     self.scheduler.process_results(workloads, next_tokens, verify_buffer, accept_nums_buffer, self.eos_token_id, self.kv_page_table)
 
-
-            if steps % 100 == 0:
-                self.tracer.on_update(steps, workloads, self.kv_page_table, accept_nums_tensor=accept_nums_buffer)
+            self.tracer.on_update(steps, workloads, self.kv_page_table, accept_nums_tensor=accept_nums_buffer)
             steps += 1
         
         profiler.end_run()
@@ -264,19 +267,19 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
     # ========================= For benchmarking =========================
     def prefill(self, sequences: List[Sequence]):
         """
-        Generate tokens from prompts.
+        Prefill tokens from prompts.
 
         Args:
-            sequences: List[Sequence], the sequences to generate from.
+            sequences: List[Sequence], the sequences to prefill.
 
         Returns:
-            List[Sequence], the completed sequences.
+            None
         """
-        # Clear KV cache and reset steps counter
+        # Clear the KV cache
         self.kv_page_table.clear_kv(self.model)
 
         # Initialize the prefill scheduler
-        prefill_scheduler = PrefillScheduler(max_concurrency=self.batch_size, prefill_chunk_len=self.prefill_chunk_len)
+        prefill_scheduler = PrefillScheduler(max_concurrency=self.batch_size, prefill_chunk_len=self.prefill_chunk_size)
         prefill_scheduler.add_sequences(sequences)
 
         # Initialize the next tokens buffer
@@ -286,19 +289,14 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
         while not prefill_scheduler.is_done():
             # Plan the workloads (only when realloc is required)
             if prefill_scheduler.realloc:
-                workloads, _ = prefill_scheduler.plan()
-            
-            # Trace the plan
-            self.tracer.on_plan(steps, workloads, self.kv_page_table)
+                workloads = prefill_scheduler.plan()
 
             # Build the batch and forward the model
-            batch = self.build_batch(workloads, self.kv_page_table, draft_buffer)
+            batch = self.build_batch(workloads, self.kv_page_table, None)
             logits, _ = self.forward(batch) # [nnz, vocab_size], [nnz, hidden_size]
 
             # Get the qo_indptr for the logits
             logits_qo_indptr = self.get_logits_qo_indptr(batch.qo_indptr, batch.gate_mask)
-
-            # PREFILL: Generate the next tokens
             if (prefill_indices := batch.status_map["PREFILL"]) is not None:
                 last_token_indices = logits_qo_indptr[1:][prefill_indices] - 1 # [n_pre]
                 last_logits = logits[last_token_indices, :] # [n_pre, vocab_size]
@@ -311,9 +309,9 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
                 self.kv_page_table.delete_kv(delete_lens)
 
             # Process the results
-            prefill_scheduler.process_results(workloads, next_tokens)
+            prefill_scheduler.process_results(workloads, next_tokens, move_to=Status.FIRST_DRAFT)
         
-        return prefill_scheduler
+        return None
 
 
     # =============================== Helper Functions ===============================

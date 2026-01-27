@@ -210,86 +210,42 @@ class Runner:
 
     def run_continuous_benchmark(self, exp_config: dict):
         """
-        Main execution loop for generation with continuous batching.
-        
-        Iterates through batches, calls engine.generate(), and prints statistics.
+        Main execution loop for benchmarking with continuous batching.
+        Examines the distribution of sequence lengths and acceleration performance.
         """
+        self.engine.set_stop_on_tail(False)
+        
         total_gen_tokens = 0
         total_model_steps = 0
         input_ids = self.batch_sampler.sample_batch().to(self.device)
 
-        if exp_config['type'] == 'prefill_decode':
-            prefill_ratio = exp_config['prefill_ratio']
-            decode_start_len = exp_config['decode_start_len']
-            assert 0 <= prefill_ratio < 1, "Prefill ratio must be between 0 and 1"
-            decode_ratio = 1 - prefill_ratio
-            
-            num_prefill = int(prefill_ratio * self.args.batch_size)
-            perm = torch.randperm(self.args.batch_size).to(self.device)
-            prefill_indices = perm[:num_prefill]
-            decode_indices = perm[num_prefill:]
+        short_ratio = exp_config['short_ratio']
+        short_target_len = exp_config['short_target_len']
+        long_target_len = exp_config['long_target_len']
+        assert 0 <= short_ratio < 1, "Short ratio must be between 0 and 1"
 
-            # For decode sequences, we need to prefill before generate
-            sequences = [
-                Sequence(seq_id=seq_id, prompt_ids=input_ids[seq_id, :decode_start_len], prompt_len=len(input_ids[seq_id, :decode_start_len]), max_seq_len=self.args.max_seq_len, max_gen_len=self.args.max_gen_len)
-                for seq_id in range(self.args.batch_size)
-            ]
-            prefill_scheduler = self.engine.prefill(sequences)
+        # Sample the indices of the short and long sequences
+        num_short = int(short_ratio * self.args.batch_size)
+        perm = torch.randperm(self.args.batch_size).to(self.device)
+        short_indices = perm[:num_short]
+        long_indices = perm[num_short:]
 
-            # Migrate the state of the prefill scheduler to the main scheduler
-            self.engine.scheduler.slots = prefill_scheduler.slots
-            self.engine.scheduler.free_slots = prefill_scheduler.free_slots
+        # For short sequences, we need to prefill before generate
+        sequences = [
+            Sequence(seq_id=seq_id, prompt_ids=input_ids[seq_id, :short_target_len], prompt_len=len(input_ids[seq_id, :short_target_len]), max_seq_len=self.args.max_seq_len, max_gen_len=self.args.max_gen_len)
+            for seq_id in short_indices.cpu().tolist()
+        ]
+        sequences.extend([
+            Sequence(seq_id=seq_id, prompt_ids=input_ids[seq_id, :long_target_len], prompt_len=len(input_ids[seq_id, :long_target_len]), max_seq_len=self.args.max_seq_len, max_gen_len=self.args.max_gen_len)
+            for seq_id in long_indices.cpu().tolist()
+        ])
+        self.engine.prefill(sequences)
 
-            # Force to continue the prefill
-            for seq_id in prefill_indices.cpu().tolist():
-                seq = sequences[seq_id]
-                seq.prompt_ids = input_ids[seq_id, :decode_start_len * 2]
-                seq.prompt_len = len(input_ids[seq_id, :decode_start_len * 2])
-                seq.status = Status.PREFILL
-                self.engine.scheduler.completed.append(seq) # Mark the sequence as completed to stop when decode is done.
-
-            # Run the benchmark
-            time_start = time.perf_counter()
-            model_steps = self.engine.generate_with_repeated_prefill(sequences)
-            time_end = time.perf_counter()
-
-        elif exp_config['type'] == 'hetero_decode':
-            short_ratio = exp_config['short_ratio']
-            assert 0 <= short_ratio < 1, "Short ratio must be between 0 and 1"
-            long_ratio = 1 - short_ratio
-
-            short_target_len = exp_config['short_target_len']
-            long_target_len = exp_config['long_target_len']
-
-            num_short = int(short_ratio * self.args.batch_size)
-            perm = torch.randperm(self.args.batch_size).to(self.device)
-            short_indices = perm[:num_short]
-            long_indices = perm[num_short:]
-
-            # For short sequences, we need to prefill before generate
-            sequences = [
-                Sequence(seq_id=seq_id, prompt_ids=input_ids[seq_id, :short_target_len], prompt_len=len(input_ids[seq_id, :short_target_len]), max_seq_len=self.args.max_seq_len, max_gen_len=self.args.max_gen_len)
-                for seq_id in short_indices.cpu().tolist()
-            ]
-            sequences.extend([
-                Sequence(seq_id=seq_id, prompt_ids=input_ids[seq_id, :long_target_len], prompt_len=len(input_ids[seq_id, :long_target_len]), max_seq_len=self.args.max_seq_len, max_gen_len=self.args.max_gen_len)
-                for seq_id in long_indices.cpu().tolist()
-            ])
-            prefill_scheduler = self.engine.prefill(sequences)
-            
-            # Migrate the state of the prefill scheduler to the main scheduler
-            self.engine.scheduler.slots = prefill_scheduler.slots
-            self.engine.scheduler.free_slots = prefill_scheduler.free_slots
-
-            # Run the benchmark
-            time_start = time.perf_counter()
-            model_steps = self.engine.generate(sequences)
-            time_end = time.perf_counter()
-
-        else:
-            raise ValueError(f"Unsupported experiment type: {exp_config['type']}")
-        
-
+        # Run the benchmark
+        time_start = time.perf_counter()
+        model_steps = self.engine.generate(sequences, clear_kv=False)
+        time_end = time.perf_counter()
+                
         # Print output if requested
         if self.args.printoutput:
             self._print_sequence_output(sequences[0], model_steps)
@@ -325,7 +281,7 @@ class Runner:
         idx = rng.integers(0, ds_len, size=num_samples)
         return self.dataset.select(idx.tolist())
 
-        
+
     def _print_batch_output(self, prefix_len, output, num_generated_tokens, model_steps):
         """Print generated output for each sequence."""
         bsz = output.shape[0]
@@ -335,7 +291,7 @@ class Runner:
                 f"(Total generated tokens: {num_generated_tokens[0]}, "
                 f"mean generated tokens per step: {mean_tokens_per_step:.2f})")
         print(self.engine.tokenizer.decode(
-            output[0, :num_generated_tokens[0]], 
+            output[0, :num_generated_tokens[0]],
             skip_special_tokens=True
         ))
 

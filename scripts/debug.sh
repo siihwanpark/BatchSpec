@@ -72,7 +72,7 @@ rank_group="0"
 # done
 
 bsz=4
-for backend in standard; do
+for backend in mtp; do
 	extra_args=$(get_extra_args $backend)
 	torchrun --standalone --nproc_per_node=$nproc_per_node -m batchspec.run_cont_bench\
 		--backend $backend\
@@ -86,7 +86,6 @@ for backend in standard; do
 		--temperature 0.6 --top_p 0.95 --top_k 20\
 		--printoutput --force_budget\
 		--profiling --engine_profiling --num_total_runs 1\
-		--exp_type prefill_decode\
-		--prefill_ratio 0.5 --decode_start_len 1024\
+		--short_ratio 0.5 --short_target_len 1024 --long_target_len 2048\
 		$extra_args
 done

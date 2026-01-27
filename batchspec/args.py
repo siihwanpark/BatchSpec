@@ -107,22 +107,6 @@ class ContinuousArguments:
 @dataclass
 class ContinuousBenchmarkArguments:
     """Arguments specific to continuous benchmark runner."""
-    exp_type: Literal["prefill_decode", "hetero_decode"] = field(
-        default="prefill_decode",
-        metadata={"help": "Experiment type (prefill_decode, hetero_decode)."}
-    )
-    prefill_ratio: float = field(
-        default=0.5,
-        metadata={"help": "Ratio of sequences to prefill."}
-    )
-    prefill_target_len: int = field(
-        default=1024,
-        metadata={"help": "Target length of the prefill sequences."}
-    )
-    decode_start_len: int = field(
-        default=1024,
-        metadata={"help": "Start length of the decode sequences."}
-    )
     short_ratio: float = field(
         default=0.5,
         metadata={"help": "Ratio of short sequences."}
