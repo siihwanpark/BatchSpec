@@ -52,7 +52,7 @@ tokenizer_path=$base_ckpt_dir/Qwen3-8B
 nproc_per_node=1
 rank_group="0"
 
-bsz=16
+bsz=32
 for backend in standard; do
 	extra_args=$(get_extra_args $backend)
 	torchrun --standalone --nproc_per_node=$nproc_per_node -m batchspec.run_continuous\
@@ -63,7 +63,7 @@ for backend in standard; do
 		--rank_group $rank_group\
 		--dataset AIME2025\
 		--dtype bfloat16\
-		--batch_size $bsz --max_gen_len 8192 --max_seq_len 8192\
+		--batch_size $bsz --max_gen_len 1024 --max_seq_len 8192\
 		--num_samples $bsz --num_questions_in_prompt 1\
 		--temperature 0.6 --top_p 0.95 --top_k 20\
 		--printoutput --stop_on_tail --force_budget\

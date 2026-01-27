@@ -1,6 +1,7 @@
 """Runner for benchmark execution."""
 
 import time
+import numpy as np
 import torch.distributed as dist
 
 from batchspec.models import LoRAConfig
@@ -175,7 +176,7 @@ class Runner:
         # Wrapping dataloader with List[Sequence]
         sampled_batch = self.sample_from_dataset(self.args.num_samples)
         sequences = [
-            Sequence(seq_id=seq_id, prompt_ids=input_ids[seq_id], prompt_len=len(input_ids), max_seq_len=self.args.max_seq_len, max_gen_len=self.args.max_gen_len)
+            Sequence(seq_id=seq_id, prompt_ids=input_ids, prompt_len=len(input_ids), max_seq_len=self.args.max_seq_len, max_gen_len=self.args.max_gen_len)
             for seq_id, input_ids in enumerate(sampled_batch['input_ids'])
         ]
         
@@ -211,10 +212,12 @@ class Runner:
     # ============================================ 
 
     def sample_from_dataset(self, num_samples: int):
-        """Sample a batch from the dataset."""
-        dataset = self.dataset.shuffle()
-        return dataset.select(range(num_samples))
-    
+        """Sample a batch from the dataset with replacement."""
+        ds_len = len(self.dataset)
+        rng = np.random.default_rng(self.args.seed)
+        idx = rng.integers(0, ds_len, size=num_samples)
+        return self.dataset.select(idx.tolist())
+        
     def _print_batch_output(self, prefix_len, output, num_generated_tokens, model_steps):
         """Print generated output for each sequence."""
         bsz = output.shape[0]
