@@ -82,7 +82,7 @@ class Runner:
 
         prefill_chunk_size = {
             2: 128, 4: 128, 8: 128, 16: 128, 
-            32: 128, 64: 128, 128: 32, 256: 16
+            32: 128, 64: 128, 128: 128, 256: 128
         }
         cache_params = {
             'batch_size': self.args.batch_size, 
