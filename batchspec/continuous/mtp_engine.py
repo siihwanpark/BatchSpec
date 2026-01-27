@@ -43,7 +43,9 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
         # Setup base caches
         self.max_seq_len = max_seq_length
         self.draft_and_verify_len = (self.draft_length + 1) ** 2
-        self.max_cache_len = max_seq_length + self.draft_and_verify_len + 1
+
+        max_input_len = max(self.draft_and_verify_len, prefill_chunk_size)
+        self.max_cache_len = max_seq_length + max_input_len + 1
         self.page_size = page_size
 
         super().setup_caches(batch_size, self.max_cache_len, page_size, prefill_chunk_size)
@@ -53,7 +55,7 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
 
         # Create non-causal attention wrapper
         self.non_causal_attn_buffer = self._create_attention_buffer(attn_buffer_size_mb)
-        max_bytes_for_attn_masks = (batch_size * (self.draft_and_verify_len * self.max_cache_len)) // 8 + 1
+        max_bytes_for_attn_masks = (batch_size * (max_input_len * self.max_cache_len)) // 8 + 1
         self.custom_mask_buf = torch.empty(max_bytes_for_attn_masks, dtype=torch.uint8, device=self.device)
         self.non_causal_attn_wrapper = self._create_attention_wrapper(
             batch_size, self.non_causal_attn_buffer,
@@ -155,7 +157,7 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
                         break
                 
                 # Trace the plan
-                self.tracer.on_plan(steps, workloads, self.kv_page_table)
+                # self.tracer.on_plan(steps, workloads, self.kv_page_table)
 
                 # Record the mean sequence length in this step
                 profiler.set_step_mean_seqlen(self.kv_page_table.cachelens.float().mean().item())

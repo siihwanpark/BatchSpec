@@ -49,43 +49,54 @@ model_name=Qwen3-8B
 model_path=$base_ckpt_dir/Qwen3-8B/model.pth
 tokenizer_path=$base_ckpt_dir/Qwen3-8B
 
-nproc_per_node=1
-rank_group="0"
+nproc_per_node=8
+rank_group="0 1 2 3 4 5 6 7"
 
-# bsz=32
-# for backend in standard; do
-# 	extra_args=$(get_extra_args $backend)
-# 	torchrun --standalone --nproc_per_node=$nproc_per_node -m batchspec.run_continuous\
-# 		--backend $backend\
-# 		--checkpoint_path $model_path\
-# 		--tokenizer_path $tokenizer_path\
-# 		--model_name $model_name\
-# 		--rank_group $rank_group\
-# 		--dataset AIME2025\
-# 		--dtype bfloat16\
-# 		--batch_size $bsz --max_gen_len 1024 --max_seq_len 8192\
-# 		--num_samples $bsz --num_questions_in_prompt 1\
-# 		--temperature 0.6 --top_p 0.95 --top_k 20\
-# 		--printoutput --stop_on_tail --force_budget\
-# 		--profiling --engine_profiling --num_total_runs 1\
-# 		$extra_args
-# done
+bsz=128
+for max_gen_len in 2048 4096 8192 16384; do
+    if [ $max_gen_len -eq 2048 ]; then
+        draft_length=2
+    else
+        draft_length=3
+    fi
 
-bsz=4
-for backend in mtp; do
-	extra_args=$(get_extra_args $backend)
-	torchrun --standalone --nproc_per_node=$nproc_per_node -m batchspec.run_cont_bench\
-		--backend $backend\
-		--checkpoint_path $model_path\
-		--tokenizer_path $tokenizer_path\
-		--model_name $model_name\
-		--rank_group $rank_group\
-		--dataset AIME2025\
-		--dtype bfloat16\
-		--batch_size $bsz --max_gen_len 128 --max_seq_len 8192\
-		--temperature 0.6 --top_p 0.95 --top_k 20\
-		--printoutput --force_budget\
-		--profiling --engine_profiling --num_total_runs 1\
-		--short_ratio 0.5 --short_target_len 1024 --long_target_len 2048\
-		$extra_args
+    for backend in standard mtp; do
+        extra_args=$(get_extra_args $backend)
+        torchrun --standalone --nproc_per_node=$nproc_per_node -m batchspec.run_conti\
+            --backend $backend\
+            --checkpoint_path $model_path\
+            --tokenizer_path $tokenizer_path\
+            --model_name $model_name\
+            --rank_group $rank_group\
+            --dataset AIME2025\
+            --dtype bfloat16\
+            --batch_size $bsz --max_gen_len $max_gen_len --max_seq_len $max_gen_len\
+            --num_samples 256\
+            --temperature 0.6 --top_p 0.95 --top_k 20\
+            --printoutput --prof_output_dir num_samples_256/max_gen_${max_gen_len}\
+            --profiling --engine_profiling --num_total_runs 1\
+            $extra_args --draft_length $draft_length
+    done
+done
+
+for short_ratio in 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0; do
+    for backend in mtp; do
+        for draft_length in 2 3; do
+            extra_args=$(get_extra_args $backend)
+            torchrun --standalone --nproc_per_node=$nproc_per_node -m batchspec.run_conti_bench\
+                --backend $backend\
+                --checkpoint_path $model_path\
+                --tokenizer_path $tokenizer_path\
+                --model_name $model_name\
+                --rank_group $rank_group\
+                --dataset AIME2025\
+                --dtype bfloat16\
+                --batch_size $bsz --max_gen_len 128 --max_seq_len 16384\
+                --temperature 0.6 --top_p 0.95 --top_k 20\
+                --printoutput --prof_output_dir hetero_seqlen/short_ratio_${short_ratio}\
+                --profiling --engine_profiling --num_total_runs 1\
+                --short_ratio $short_ratio --short_target_len 1024 --long_target_len 15360\
+                $extra_args --draft_length $draft_length
+        done
+    done
 done

@@ -107,7 +107,7 @@ class StandardContinuousEngine(StandardEngine, BatchBuilderMixin):
                         break
                 
                 # Trace the plan
-                self.tracer.on_plan(steps, workloads, self.kv_page_table)
+                # self.tracer.on_plan(steps, workloads, self.kv_page_table)
 
                 # Record the mean sequence length in this step
                 profiler.set_step_mean_seqlen(self.kv_page_table.cachelens.float().mean().item())

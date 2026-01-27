@@ -222,7 +222,7 @@ class Runner:
         short_ratio = exp_config['short_ratio']
         short_target_len = exp_config['short_target_len']
         long_target_len = exp_config['long_target_len']
-        assert 0 <= short_ratio < 1, "Short ratio must be between 0 and 1"
+        assert 0 <= short_ratio <= 1, "Short ratio must be between 0 and 1"
 
         # Sample the indices of the short and long sequences
         num_short = int(short_ratio * self.args.batch_size)
