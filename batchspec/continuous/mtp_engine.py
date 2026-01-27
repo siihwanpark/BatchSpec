@@ -158,12 +158,8 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
                 self.tracer.on_plan(steps, workloads, self.kv_page_table)
 
                 # Record the mean sequence length in this step
-                cachelens = self.kv_page_table.cachelens
-                mean_seqlen = cachelens[cachelens > 16].float().mean().item() if (cachelens > 16).any() else 0.0
-                seqlen_std = cachelens[cachelens > 16].float().std().item() if (cachelens > 16).any() else 0.0
-                
-                profiler.set_step_mean_seqlen(mean_seqlen)
-                profiler.set_step_seqlen_std(seqlen_std)
+                profiler.set_step_mean_seqlen(self.kv_page_table.cachelens.float().mean().item())
+                profiler.set_step_seqlen_std(self.kv_page_table.cachelens.float().std().item())
 
                 # Build the batch and forward the model
                 prev_cachelens = self.kv_page_table.cachelens.clone()
