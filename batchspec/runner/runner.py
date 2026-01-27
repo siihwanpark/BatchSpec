@@ -1,8 +1,10 @@
 """Runner for benchmark execution."""
 
+import time
 import torch.distributed as dist
 
 from batchspec.models import LoRAConfig
+from batchspec.continuous.base import Sequence
 
 
 class Runner:
@@ -15,7 +17,7 @@ class Runner:
     - Output processing and statistics
     """
     
-    def __init__(self, args, engine, tokenizer, batch_sampler=None):
+    def __init__(self, args, engine, tokenizer, batch_sampler=None, dataset=None):
         """
         Initialize the runner.
         
@@ -24,12 +26,17 @@ class Runner:
             engine: Backend engine (StandardEngine or MTPEngine)
             tokenizer: HuggingFace tokenizer
             batch_sampler: BatchSampler for benchmark dataset
+            dataset: Dataset for continuous generation
         """
         self.args = args
         self.engine = engine
         self.batch_sampler = batch_sampler
+        self.dataset = dataset
         self.device = engine.device
         self.run_cnt = 0
+        
+        if (dataset is None) == (batch_sampler is None):
+            raise ValueError("Provide exactly one of dataset or batch_sampler, not both or neither.")
         
     def setup(self, process_group):
         """
@@ -74,11 +81,11 @@ class Runner:
 
         prefill_chunk_size = {
             2: 128, 4: 128, 8: 128, 16: 128, 
-            32: 128, 64: 128, 128: 64, 256: 32
+            32: 128, 64: 128, 128: 32, 256: 16
         }
         cache_params = {
             'batch_size': self.args.batch_size, 
-            'max_seq_length': self.args.max_len, 
+            'max_seq_length': self.args.max_seq_len,
             'page_size': 16,
             'prefill_chunk_size': prefill_chunk_size.get(self.args.batch_size, 128),
             'attn_buffer_size_mb': self.args.attn_buffer_size_mb,
@@ -101,7 +108,7 @@ class Runner:
         self.engine.setup_special_tokens()
 
 
-    def run(self):
+    def run_benchmark(self):
         """
         Main execution loop for benchmarking.
         
@@ -131,7 +138,7 @@ class Runner:
             
             # Print output if requested
             if self.args.printoutput:
-                self._print_output(prefix_len, output, num_generated_tokens, model_steps)
+                self._print_batch_output(prefix_len, output, num_generated_tokens, model_steps)
             
             # Accumulate statistics
             total_gen_tokens += num_generated_tokens.sum().item()
@@ -150,9 +157,58 @@ class Runner:
         print(f"Total generated tokens: {total_gen_tokens}")
         print(f"Total model steps (batch_size): {total_model_steps} (batch_size: {bsz})")
         print(f"➡️  Mean generated tokens: {total_gen_tokens / (total_model_steps * bsz):.3f}")
+        
+        return
 
+
+    def run_continuous(self):
+        """
+        Main execution loop for generation with continuous batching.
+        
+        Iterates through batches, calls engine.generate(), and prints statistics.
+        """
+        self.engine.set_stop_on_tail(self.args.stop_on_tail)
+        
+        total_gen_tokens = 0
+        total_model_steps = 0
+        
+        # Wrapping dataset with List[Sequence]
+        sequences = [
+            Sequence(seq_id=seq_id, prompt_ids=input_ids, prompt_len=len(input_ids), max_seq_len=self.args.max_seq_len, max_gen_len=self.args.max_gen_len)
+            for seq_id, input_ids in enumerate(self.dataset['input_ids'])
+        ]
+        
+        time_start = time.perf_counter()
+        model_steps = self.engine.generate(sequences)
+        time_end = time.perf_counter()
+        
+        # Print output if requested
+        if self.args.printoutput:
+            self._print_sequence_output(sequences[0], model_steps)
+        
+        # Accumulate statistics
+        total_prefilled_tokens = sum([seq.prompt_len for seq in sequences])
+        total_generated_tokens = sum([seq.num_generated_tokens for seq in sequences])
+
+        # Distributed barrier if needed
+        if self.args.rank_group and len(self.args.rank_group) > 1:
+            dist.barrier()
+        
+        # Print final statistics
+        print("="*20 + " Statistics (batch_size: " + str(self.args.batch_size) + ")" + "="*20)
+        print(f"Total prefilled tokens: {total_prefilled_tokens} tokens")
+        print(f"Total generated tokens: {total_generated_tokens} tokens")
+        print(f"Total model steps: {model_steps}")
+        print(f"➡️  Mean prefilled tokens: {total_prefilled_tokens / self.args.batch_size:.2f} tokens/seq")
+        print(f"➡️  Mean generated tokens: {total_generated_tokens / (model_steps * self.args.batch_size):.2f} tokens/seq")
+        print(f"📈 Mean latency: {(time_end - time_start)*1000 / model_steps:.2f} ms/step")
+        print(f"📈 Throughput: {total_generated_tokens / (time_end - time_start):.2f} tokens/s")
     
-    def _print_output(self, prefix_len, output, num_generated_tokens, model_steps):
+    
+    # ============================================
+    # Helper functions
+    # ============================================    
+    def _print_batch_output(self, prefix_len, output, num_generated_tokens, model_steps):
         """Print generated output for each sequence."""
         bsz = output.shape[0]
         print("\n" + "="*50 + f" Prefix Length {prefix_len} Output " + "="*50)
@@ -160,9 +216,16 @@ class Runner:
         print(f"########## Sequence 0 ########## "
                 f"(Total generated tokens: {num_generated_tokens[0]}, "
                 f"mean generated tokens per step: {mean_tokens_per_step:.2f})")
-        decoded = self.engine.tokenizer.decode(
+        print(self.engine.tokenizer.decode(
             output[0, :num_generated_tokens[0]], 
             skip_special_tokens=True
-        )
-        print(decoded)
+        ))
+
+    
+    def _print_sequence_output(self, seq: Sequence, model_steps: int) -> None:
+        """Print output for a single sequence."""
+        print(f"########## Sequence {seq.seq_id} ########## "
+                f"(Total generated tokens: {seq.num_generated_tokens}, "
+                f"mean generated tokens per step: {seq.num_generated_tokens / model_steps:.2f})")
+        print(self.engine.tokenizer.decode(seq.content[:seq.cur_pos+1], skip_special_tokens=True))
 

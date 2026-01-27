@@ -242,7 +242,7 @@ class BaseEngine(AttentionWrapperMixin):
 
         suppress_indices = torch.argmax(suppress_mask.int(), dim=-1) # [bsz]
         suppress_indices[~suppress_mask.any(dim=-1)] = -1
-        rows_to_update = suppress_indices != -1
+        rows_to_update = (suppress_indices != -1) & (accept_nums >= suppress_indices)
         if rows_to_update.any():
             suppressed_accept_nums[rows_to_update] = suppress_indices[rows_to_update].to(suppressed_accept_nums.dtype)
 

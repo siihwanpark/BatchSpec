@@ -160,11 +160,12 @@ class Profiler:
                 return None
             
             def __exit__(self, exc_type, exc_val, exc_tb):
+                if profiler.cfg.strict_sync:
+                    torch.cuda.synchronize()
+                
                 self.end_event.record()
                 profiler._is_measuring = False
                 
-                if profiler.cfg.strict_sync:
-                    torch.cuda.synchronize()
                 self.end_event.synchronize()
                 if profiler.cfg.dist_barrier and dist_ready():
                     dist.barrier()
@@ -242,11 +243,11 @@ class Profiler:
             })
 
         # Compute bucket averages for this run (with "other" calculation for model buckets)
-        model_bucket_avg = self._compute_model_bucket_averages_with_other(
+        model_bucket_avg = self._compute_bucket_averages_with_others(
             self._step_model_buckets, self._step_latencies_ms, num_steps
         )
-        engine_bucket_avg = self._compute_bucket_averages(
-            self._step_engine_buckets, num_steps, ENGINE_BUCKET_ORDER
+        engine_bucket_avg = self._compute_bucket_averages_with_others(
+            self._step_engine_buckets, self._step_latencies_ms, num_steps, ENGINE_BUCKET_ORDER
         )
 
         # Package run results
@@ -267,11 +268,12 @@ class Profiler:
         self._global_tokens += stats.get("tokens_total", 0)
         self._global_steps += num_steps
 
-    def _compute_model_bucket_averages_with_other(
+    def _compute_bucket_averages_with_others(
         self,
         step_buckets: List[Dict[str, float]],
         step_latencies: List[float],
-        num_steps: int
+        num_steps: int,
+        bucket_order: Optional[List[str]] = None,
     ) -> Dict[str, float]:
         """
         Compute average model bucket times with "other" (untracked time).
@@ -299,30 +301,10 @@ class Profiler:
         total_latency = sum(step_latencies)
         other_total = total_latency - total_tracked_time
         if other_total > 0:
-            bucket_avgs["other"] = other_total / num_steps
+            bucket_avgs["others"] = other_total / num_steps
         
-        return order_and_compact(bucket_avgs, MODEL_BUCKET_ORDER)
+        return order_and_compact(bucket_avgs, bucket_order or MODEL_BUCKET_ORDER)
 
-    def _compute_bucket_averages(
-        self, 
-        step_buckets: List[Dict[str, float]], 
-        num_steps: int,
-        bucket_order: List[str]
-    ) -> Dict[str, float]:
-        """Compute average bucket times across all steps in a run."""
-        if num_steps == 0 or not step_buckets:
-            return {}
-        
-        # Sum across all steps
-        bucket_sums: Dict[str, float] = {}
-        for step_data in step_buckets:
-            for key, value in step_data.items():
-                bucket_sums[key] = bucket_sums.get(key, 0.0) + value
-        
-        # Compute averages
-        bucket_avgs = {key: (total / num_steps) for key, total in bucket_sums.items()}
-        
-        return order_and_compact(bucket_avgs, bucket_order)
 
     # ========================================================================
     # Save outputs
@@ -678,13 +660,13 @@ class Profiler:
             if key in bucket_stats:
                 write_row(key, bucket_stats[key])
         
-        # Write remaining buckets (not in order, excluding "other")
-        remaining = sorted([k for k in bucket_stats.keys() if k not in bucket_order and k != "other"])
+        # Write remaining buckets (not in order, excluding "others")
+        remaining = sorted([k for k in bucket_stats.keys() if k not in bucket_order and k != "others"])
         for key in remaining:
             write_row(key, bucket_stats[key])
         
-        # Write "other" last
-        if "other" in bucket_stats:
-            write_row("other", bucket_stats["other"])
+        # Write "others" last
+        if "others" in bucket_stats:
+            write_row("others", bucket_stats["others"])
         
         f.write("\n")

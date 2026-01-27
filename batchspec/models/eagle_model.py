@@ -261,7 +261,13 @@ class EAGLETransformer(BaseTransformer):
             Logits, or tuple of (logits, hidden_states) if return_hidden_states=True
         """
         # Embed tokens
-        x = self.tok_embeddings(input_ids)
+        if input_ids.dim() != 1:
+            # Input shape: (batch_size, seq_len)
+            bsz, seqlen = input_ids.shape
+            x = self.tok_embeddings(input_ids.view(bsz * seqlen))
+        else:
+            # Input shape: (nnz)
+            x = self.tok_embeddings(input_ids)
         
         # Process through transformer layers
         hidden_states = []
@@ -281,7 +287,11 @@ class EAGLETransformer(BaseTransformer):
         # Final normalization and projection
         x = self.norm(x)
         logits = self.output(x)
-        
+
+        if input_ids.dim() != 1:
+            logits = logits.view(bsz, seqlen, -1)
+            hidden_states = hidden_states.view(bsz, seqlen, -1)
+
         # Gather logits for distributed training
         logits = self._maybe_all_gather_logits(logits)
         return logits, hidden_states

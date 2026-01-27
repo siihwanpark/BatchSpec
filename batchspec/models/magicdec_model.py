@@ -92,8 +92,8 @@ class MagicDecTransformer(BaseTransformer):
         """Forward pass through the transformer.
         
         Args:
-            input_ids: Input token indices of shape (batch_size, seq_len)
-            position_offsets: Position offsets (start position id)
+            input_ids: Input token indices of shape (batch_size, seq_len) or (nnz)
+            position_offsets: Position offsets (start position id) or (nnz)
             qo_indptr: Index pointer for Query/Output tokens
             kv_page_table: Page table for KV cache
             draft: Whether to use draft KV cache
@@ -101,7 +101,13 @@ class MagicDecTransformer(BaseTransformer):
             Logits tensor of shape (batch_size, seq_len, vocab_size)
         """
         # Embed tokens
-        x = self.tok_embeddings(input_ids)
+        if input_ids.dim() != 1:
+            # Input shape: (batch_size, seq_len)
+            bsz, seqlen = input_ids.shape
+            x = self.tok_embeddings(input_ids.view(bsz * seqlen))
+        else:
+            # Input shape: (nnz)
+            x = self.tok_embeddings(input_ids)
         
         # Forward pass through transformer layers
         for layer in self.layers:
@@ -115,6 +121,9 @@ class MagicDecTransformer(BaseTransformer):
         # Final normalization and projection
         x = self.norm(x)
         logits = self.output(x)
+
+        if input_ids.dim() != 1:
+            logits = logits.view(bsz, seqlen, -1)
         
         # All-gather logits across all ranks for tensor parallel
         return self._maybe_all_gather_logits(logits)

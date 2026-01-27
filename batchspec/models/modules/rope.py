@@ -41,21 +41,17 @@ def setup_rope_function(
         )
         
         if use_position_ids:
-            rope_func = lambda q, k, position_ids: flashinfer.rope.apply_llama31_rope_pos_ids(
-                q, k, position_ids, **rope_kwargs
-            )
+            rope_func = lambda q, k, position_ids:\
+             flashinfer.rope.apply_llama31_rope_pos_ids(q, k, position_ids, **rope_kwargs)
         else:
-            rope_func = lambda q, k, indptr, offsets: flashinfer.rope.apply_llama31_rope(
-                q, k, indptr, offsets, **rope_kwargs
-            )
+            rope_func = lambda q, k, indptr, offsets:\
+             flashinfer.rope.apply_llama31_rope(q, k, indptr, offsets, **rope_kwargs)
     else:
         if use_position_ids:
-            rope_func = lambda q, k, position_ids: flashinfer.rope.apply_rope_pos_ids(
-                q, k, position_ids, **rope_kwargs
-            )
+            rope_func = lambda q, k, position_ids:\
+             flashinfer.rope.apply_rope_pos_ids(q, k, position_ids, **rope_kwargs)
         else:
-            rope_func = lambda q, k, indptr, offsets: flashinfer.rope.apply_rope(
-                q, k, indptr, offsets, **rope_kwargs
-            )
+            rope_func = lambda q, k, indptr, offsets:\
+             flashinfer.rope.apply_rope(q, k, indptr, offsets, **rope_kwargs)
     
     return rope_func

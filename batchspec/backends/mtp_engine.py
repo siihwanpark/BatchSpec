@@ -348,7 +348,8 @@ class MTPEngine(BaseEngine):
             draft_tokens (torch.Tensor): The actual draft tokens. Shape: [bsz, draft_length]
         """
         # placeholder for draft tokens (actually, 1 regular token + draft_length draft tokens)
-        tokens_buffer = torch.zeros((self.batch_size, 1 + self.draft_length), dtype=torch.long, device=self.device) # [bsz, 1 + draft_length]
+        bsz, draft_len = draft_hidden_states.shape[:2]
+        tokens_buffer = torch.zeros((bsz, 1 + draft_len), dtype=torch.long, device=self.device) # [bsz, 1 + draft_length]
         tokens_buffer[:, :1] = next_tokens # [bsz, 1]
         
         # model forward for sampler
@@ -440,7 +441,7 @@ class MTPEngine(BaseEngine):
                     # Collate the accepted KV cache entries
                     self.collate_accepted_kv_cache(accept_nums, past_cachelens)
 
-                    # Register accept_nums to Profiler
+                    # Record the number of tokens generated in this step
                     profiler.set_step_tokens(int(accept_nums.sum().item()))
                     
                     # Write the accepted tokens to the output

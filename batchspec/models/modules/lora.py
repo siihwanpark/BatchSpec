@@ -94,14 +94,15 @@ class GatedLoRALinear(nn.Module):
         with cuda_bucket_timer(base_bucket):
             y = self.base_layer(x)
             
-        # If no gate mask, return base output only
-        if gate_mask is None:
+        # If no gate mask or all tokens are masked, return base output only
+        if gate_mask is None or gate_mask.all():
             return y
 
         # Apply LoRA with gating
         with cuda_bucket_timer(lora_bucket):
             # Project to low-rank space
             z = self.lora_A(x)
+
             # Apply gating in the subspace
             z.mul_(gate_mask)
 

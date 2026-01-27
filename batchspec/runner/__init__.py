@@ -2,20 +2,21 @@
 Runner module for BatchSpec benchmarking.
 
 This module provides:
-- Runner: Common runner logic for E2E and benchmark execution
+- Runner: Common runner logic for continuous generation and benchmark execution
 - BatchSampler: Sampling batches from datasets
-- Dataset utilities: Loading and preparing datasets
+- Utilities: Loading and preparing datasets, checking path and broadcasting
 """
 
 from .runner import Runner
 from .batch_sampler import BatchSampler, StrictPrefixBatchSampler
-from .dataset_utils import load_dataset, load_benchmark_dataset
+from .utils import load_hf_dataset, load_benchmark_dataset, check_path_and_broadcast
 
 __all__ = [
     "Runner",
     "BatchSampler",
     "StrictPrefixBatchSampler",
-    "load_dataset",
+    "load_hf_dataset",
     "load_benchmark_dataset",
+    "check_path_and_broadcast",
 ]
 

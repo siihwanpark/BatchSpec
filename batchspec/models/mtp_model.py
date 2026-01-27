@@ -101,6 +101,7 @@ class MTPTransformer(BaseTransformer):
         """
         return self.output
     
+
     def _forward_lm_head(
         self, 
         x: Tensor,
@@ -109,28 +110,20 @@ class MTPTransformer(BaseTransformer):
         """Forward pass through language model head with optional masking.
         
         Args:
-            x: Hidden states of shape (batch_size, seq_len, dim)
-            gate_mask: Optional mask to select non-masked tokens only
+            x: Hidden states of shape (bsz, seqlen, dim) or (nnz, dim)
+            gate_mask: mask to select non-masked tokens only of shape (bsz, seqlen) or (nnz, 1)
             
         Returns:
-            Logits tensor
+            Logits tensor of shape (bsz, seqlen_selected, vocab_size) or (nnz_selected, vocab_size)
         """
-        if gate_mask is None:
-            # Standard forward pass
-            return self._maybe_all_gather_logits(self.output(x))
-        else:
-            # Forward only non-masked tokens for efficiency
-            bsz, _, dim = x.shape
-            
-            # Find non-masked token positions
-            non_mask_indices = (gate_mask.view(-1) == 0).nonzero(as_tuple=True)[0]
-            
-            # Select and process only non-masked tokens
-            x_selected = x.reshape(-1, dim).index_select(0, non_mask_indices)
-            logits = self._maybe_all_gather_logits(self.output(x_selected))
-            
-            # Reshape back to include batch dimension
-            return logits.reshape(bsz, non_mask_indices.numel() // bsz, -1)
+        # Forward only non-masked tokens for efficiency
+        # Find non-masked token positions
+        non_mask_indices = (gate_mask.view(-1) == 0).nonzero(as_tuple=True)[0]
+        
+        # Select and process only non-masked tokens
+        x_selected = x.index_select(0, non_mask_indices)
+        return self._maybe_all_gather_logits(self.output(x_selected))
+    
     
     def forward(
         self,
@@ -144,17 +137,24 @@ class MTPTransformer(BaseTransformer):
         """Forward pass through the MTP transformer.
         
         Args:
-            input_ids: Input token indices of shape (batch_size, seq_len)
-            gate_mask: Gate mask for LoRA of shape (batch_size, seq_len)
+            input_ids: Input token indices of shape (batch_size, seq_len) or (nnz)
+            gate_mask: Gate mask for LoRA of shape (batch_size, seq_len) or (nnz)
             position_ids: Position IDs for RoPE
             qo_indptr: Index pointer for Query/Output tokens
             kv_page_table: Page table for KV cache
             causal: Whether to use causal attention
         Returns:
             Tuple of (logits, hidden_states)
-        """
+        """        
         # Embed tokens
-        x = self.tok_embeddings(input_ids)
+        if input_ids.dim() != 1:
+            # Input shape: (batch_size, seq_len)
+            bsz, seqlen = input_ids.shape
+            x = self.tok_embeddings(input_ids.view(bsz * seqlen))
+        else:
+            # Input shape: (nnz)
+            gate_mask = gate_mask[:, None] # expanding to (nnz, 1) for broadcasting
+            x = self.tok_embeddings(input_ids)
 
         # Forward pass through transformer layers with gated LoRA
         for layer in self.layers:
@@ -169,8 +169,15 @@ class MTPTransformer(BaseTransformer):
         # Final normalization
         x = self.norm(x)
         
-        # Generate logits
+        # Generate logits for only non-masked tokens
+        # (Note: the sequence length of logits can be different from the input sequence length)
         logits = self._forward_lm_head(x, gate_mask)
+
+        if input_ids.dim() != 1:
+            non_mask_seqlen = logits.shape[0] // bsz
+            logits = logits.view(bsz, non_mask_seqlen, -1)
+            x = x.view(bsz, seqlen, -1)
+        
         return logits, x
     
     def sampler_forward(self, input_ids: Tensor, hidden_states: Tensor) -> Tensor:

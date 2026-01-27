@@ -40,6 +40,10 @@ class CommonArguments:
         default=16,
         metadata={"help": "Batch size for inference."}
     )
+    max_seq_len: int = field(
+        default=32768,
+        metadata={"help": "Maximum sequence length for the model. Upper bound for the prompt length + generation length."}
+    )
     max_gen_len: int = field(
         default=128,
         metadata={"help": "Maximum number of tokens to generate."}
@@ -77,9 +81,26 @@ class BenchmarkArguments:
         default_factory=lambda: [1024, 2048, 4096, 8192, 12288, 16384, 20480, 24576, 28672],
         metadata={"help": "List of input prompt sequence lengths."}
     )
-    num_total_runs: int = field(
-        default=11,
-        metadata={"help": "Total number of runs for the benchmark."}
+
+
+@dataclass
+class ContinuousArguments:
+    """Arguments specific to continuous runner."""
+    num_questions_in_prompt: int = field(
+        default=1,
+        metadata={"help": "Number of questions in the prompt."}
+    )
+    num_samples: Optional[int] = field(
+        default=None,
+        metadata={"help": "Total number of samples to generate. If None, use the whole dataset."}
+    )
+    stop_on_tail: bool = field(
+        default=False,
+        metadata={"help": "Stop immediately upon reaching the tail generation."}
+    )
+    print_trace: bool = field(
+        default=False,
+        metadata={"help": "Print the trace of the generation."}
     )
 
 
@@ -237,6 +258,10 @@ class ProfilerArguments:
         default="mean",
         metadata={"help": "How to reduce per-batch KV lengths to scalar for binning."}
     )
+    num_total_runs: int = field(
+        default=11,
+        metadata={"help": "Total number of runs for the profiling."}
+    )
 
 
 @dataclass
@@ -286,7 +311,7 @@ def _postprocess_args(args: SimpleNamespace) -> SimpleNamespace:
     return args
 
 
-def parse_args() -> SimpleNamespace:
+def parse_benchmark_args() -> SimpleNamespace:
     """Parse arguments for run.py"""
     parser = HfArgumentParser((
         CommonArguments,
@@ -306,6 +331,31 @@ def parse_args() -> SimpleNamespace:
     (common, benchmark, sampling, specdec, standalone, ngram, eagle, magicdec, mtp, profiler, distributed) = parsed
     
     merged = _merge_to_namespace(common, benchmark, sampling, specdec, standalone, ngram, eagle, magicdec, mtp, profiler, distributed)
+    merged = _postprocess_args(merged)
+    
+    return merged
+
+
+def parse_continuous_args() -> SimpleNamespace:
+    """Parse arguments for run_continuous.py"""
+    parser = HfArgumentParser((
+        CommonArguments,
+        ContinuousArguments,
+        SamplingArguments,
+        SpecDecArguments,
+        StandaloneArguments,
+        NGramArguments,
+        EAGLEArguments,
+        MagicDecArguments,
+        MTPArguments,
+        ProfilerArguments,
+        DistributedArguments,
+    ))
+    
+    parsed = parser.parse_args_into_dataclasses()
+    (common, continuous, sampling, specdec, standalone, ngram, eagle, magicdec, mtp, profiler, distributed) = parsed
+    
+    merged = _merge_to_namespace(common, continuous, sampling, specdec, standalone, ngram, eagle, magicdec, mtp, profiler, distributed)
     merged = _postprocess_args(merged)
     
     return merged
