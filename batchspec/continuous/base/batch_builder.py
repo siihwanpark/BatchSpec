@@ -27,7 +27,7 @@ class BatchPack:
     
     # map of status to the index of the sequence in the batch
     # DEPRECATED: Use the status_map in the scheduler instead.
-    status_map: Dict[str, Optional[Tensor]] = field(default_factory=lambda: {"PREFILL": None, "FIRST_DRAFT": None, "DRAFT_VERIFY": None})
+    status_map: Dict[str, Optional[Tensor]] = field(default_factory=lambda: {"PREFILL": None, "FIRST_DRAFT": None, "DRAFT_VERIFY": None, "NULL": None})
 
 
 class BatchBuilderMixin:
@@ -44,6 +44,7 @@ class BatchBuilderMixin:
 
         num_tokens_per_seq = torch.tensor([workload.n_tokens for workload in workloads], dtype=torch.int32, device=device)
         nnz = int(num_tokens_per_seq.sum().item())
+        status_map = {"PREFILL": [], "DECODE": [], "NULL": []}
 
         # Allocate memory for input ids
         input_ids = torch.empty(nnz, dtype=torch.long, device=device)
@@ -57,7 +58,13 @@ class BatchBuilderMixin:
             if seq is None:
                 input_ids[write_ptr:write_ptr+n_tokens].fill_(self.pad_token_id)
                 write_ptr += n_tokens
+                status_map["NULL"].append(workload.slot_idx)
                 continue
+
+            if seq.status == Status.PREFILL:
+                status_map["PREFILL"].append(workload.slot_idx)
+            elif seq.status == Status.DECODE:
+                status_map["DECODE"].append(workload.slot_idx)
             
             start = seq.cur_pos
             end = start + n_tokens
@@ -69,10 +76,15 @@ class BatchBuilderMixin:
         qo_indptr = torch.empty(n_seqs + 1, dtype=torch.int32, device=device)
         qo_indptr[0] = 0; qo_indptr[1:] = torch.cumsum(num_tokens_per_seq, dim=0)
 
+        # Finalize status_map
+        status_map = {status: torch.tensor(indices, dtype=torch.int64, device=device) if indices else None
+                      for status, indices in status_map.items()}
+
         return BatchPack(
             input_ids=input_ids,
             qo_indptr=qo_indptr,
             position_ids_or_offsets=kv_page_table.cachelens.clone(),
+            status_map=status_map,
         )
 
 
@@ -98,7 +110,7 @@ class MTPBatchBuilderMixin:
         position_ids = torch.empty(nnz, dtype=torch.int32, device=device)
         gate_mask = torch.empty(nnz, dtype=torch.int32, device=device)
         attn_mask_arr = []
-        status_map = {"PREFILL": [], "FIRST_DRAFT": [], "DRAFT_VERIFY": []}
+        status_map = {"PREFILL": [], "FIRST_DRAFT": [], "DRAFT_VERIFY": [], "NULL": []}
 
         # Write input ids and position ids/offsets to the allocated memory
         write_ptr = 0
@@ -112,6 +124,7 @@ class MTPBatchBuilderMixin:
                 attn_mask_arr.append(torch.zeros(n_tokens, device=device))
 
                 write_ptr += n_tokens
+                status_map["NULL"].append(slot_idx)
                 continue
 
             if seq.status == Status.PREFILL:

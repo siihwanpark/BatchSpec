@@ -34,14 +34,13 @@ MMLU_PRO_PREFIX = (
 
 BENCHMARK_DATASET_BASE_DIR = "/workspace/BatchSpec/benchmark_data/responses"
 
-def load_hf_dataset(tokenizer, dataset_name, num_samples=None, num_questions_in_prompt=1):
+def load_hf_dataset(tokenizer, dataset_name, num_questions_in_prompt=1):
     """
     Load and tokenize a dataset for continuous generation.
     
     Args:
         tokenizer: HuggingFace tokenizer
         dataset_name: Name of the dataset (e.g., "GSM8K", "AIME2025")
-        num_samples: Number of samples to load (None = all)
         num_questions_in_prompt: Number of questions to combine in a single prompt
         
     Returns:
@@ -123,23 +122,6 @@ def load_hf_dataset(tokenizer, dataset_name, num_samples=None, num_questions_in_
     ds = ds.map(tokenize_fn, batched=True, remove_columns=[prompt_key])
     ds.set_format(type="torch", columns=["input_ids"])
     
-    if num_samples is not None:
-        n = len(ds)
-        num_samples = int(num_samples)
-        
-        if num_samples == n:
-            return ds
-        elif num_samples < n:
-            ds = ds.select(range(num_samples))
-        else:
-            times, rem = divmod(num_samples, n)
-            parts = []
-            if times > 0:
-                parts.extend([ds] * times) # repeat full copies
-            if rem > 0:
-                parts.append(ds.select(range(rem))) # tail
-            ds = concatenate_datasets(parts)
-
     return ds
 
 

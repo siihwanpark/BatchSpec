@@ -155,6 +155,11 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
                 # Trace the plan
                 self.tracer.on_plan(steps, workloads, self.kv_page_table)
 
+                # Record the mean sequence length in this step
+                cachelens = self.kv_page_table.cachelens
+                mean_seqlen = cachelens[cachelens > 16].float().mean().item() if (cachelens > 16).any() else 0.0
+                profiler.set_step_mean_seqlen(mean_seqlen)
+
                 # Build the batch and forward the model
                 prev_cachelens = self.kv_page_table.cachelens.clone()
                 with cpu_bucket_timer("engine.build_batch"):
@@ -234,12 +239,19 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
                     # Generate the draft tokens from the mask tokens
                     draft_buffer[draft_verify_indices, 1:] = self.sampler_draft(draft_buffer[draft_verify_indices, :1], selected_hidden_states) # [_, k], [_, k, hidden_size]
 
-                # # Record the number of tokens generated in this step
-                # profiler.set_step_tokens(int(accept_nums_buffer.sum().item()))
+                # Record the number of tokens generated in this step
+                profiler.set_step_tokens(int(accept_nums_buffer.sum().item()))
+
+                # Remove the KV cache entries for the NULL sequences
+                if batch.status_map["NULL"] is not None:
+                    delete_lens = torch.zeros(self.batch_size, device=self.device, dtype=torch.int32)
+                    delete_lens.scatter_(0, batch.status_map["NULL"], 1)
+                    self.kv_page_table.delete_kv(delete_lens)
 
                 # Process the results
                 with cpu_bucket_timer("engine.process_results"):
                     self.scheduler.process_results(workloads, next_tokens, verify_buffer, accept_nums_buffer, self.eos_token_id, self.kv_page_table)
+
 
             if steps % 100 == 0:
                 self.tracer.on_update(steps, workloads, self.kv_page_table, accept_nums_tensor=accept_nums_buffer)

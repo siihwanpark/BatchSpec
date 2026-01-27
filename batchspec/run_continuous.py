@@ -5,7 +5,6 @@ from tqdm import tqdm
 
 import torch
 import torch.distributed as dist
-from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from batchspec.backends.utils import init_dist, setup_seed
@@ -40,7 +39,6 @@ def main():
         dataset = load_hf_dataset(
             tokenizer=tokenizer, 
             dataset_name=args.dataset,
-            num_samples=args.num_samples,
             num_questions_in_prompt=args.num_questions_in_prompt,
         )
 
@@ -67,10 +65,9 @@ def main():
             prof.attach_engine(engine)
             
         # Run the benchmark
-        # for run_idx in tqdm(range(args.num_total_runs), total=args.num_total_runs, desc="Running benchmark"):
-        #     print("\n" + "="*50 + f" Run {run_idx} Start " + "="*50)
-        #     runner.run_continuous()
-        runner.run_continuous()
+        for run_idx in tqdm(range(args.num_total_runs), total=args.num_total_runs, desc="Running benchmark"):
+            print("\n" + "="*50 + f" Run {run_idx} Start " + "="*50)
+            runner.run_continuous()
         
         if args.profiling:
             prof.save_config()

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 import torch.distributed as dist
+import numpy as np
 
 from .config import ProfilerConfig, MODEL_BUCKET_ORDER, ENGINE_BUCKET_ORDER
 from .hooks import attach_model_hooks, attach_engine_hooks
@@ -74,7 +75,16 @@ class Profiler:
         self._step_events: List[tuple[str, Any, Any, str]] = []  # (type, start, end, bucket)
         self._step_model_buckets: List[Dict[str, float]] = []
         self._step_engine_buckets: List[Dict[str, float]] = []
+        
+        # Pending data which will be recorded at the end of the step
         self._pending_tokens: int = 0
+        self._pending_mean_seqlen: float = 0.0
+
+        # Step-level elapsed time and throughput
+        self._elapsed_time_ms: float = 0.0
+        self._step_elapsed_times_ms: List[float] = []
+        self._step_throughputs: List[float] = []
+        self._step_mean_seqlen: List[float] = []
 
         # === Accumulated results ===
         self._runs: List[Dict[str, Any]] = []
@@ -128,6 +138,10 @@ class Profiler:
         self._step_events.clear()
         self._step_model_buckets.clear()
         self._step_engine_buckets.clear()
+        self._step_elapsed_times_ms.clear()
+        self._step_throughputs.clear()
+        self._step_mean_seqlen.clear()
+        self._elapsed_time_ms = 0.0
         self._step_idx = 0
         
     def step_timing_ctx(self):
@@ -174,10 +188,23 @@ class Profiler:
                 step_ms = float(self.start_event.elapsed_time(self.end_event))
                 profiler._step_latencies_ms.append(step_ms)
                 
+                # Record elapsed time
+                profiler._elapsed_time_ms += step_ms
+                profiler._step_elapsed_times_ms.append(profiler._elapsed_time_ms)
+
                 # Record tokens
                 tokens = profiler._pending_tokens
                 profiler._step_tokens.append(int(tokens))
                 profiler._pending_tokens = 0
+
+                # Record mean sequence length
+                mean_seqlen = profiler._pending_mean_seqlen
+                profiler._step_mean_seqlen.append(float(mean_seqlen))
+                profiler._pending_mean_seqlen = 0.0
+
+                # Record throughput
+                throughput = tokens / (step_ms / 1000.0) if step_ms > 0 else 0.0
+                profiler._step_throughputs.append(throughput)
 
                 # Process bucket events
                 if profiler._step_events and (profiler.cfg.model_profiling or profiler.cfg.engine_profiling):
@@ -212,6 +239,17 @@ class Profiler:
         except Exception:
             self._pending_tokens = 0
 
+
+    def set_step_mean_seqlen(self, mean_seqlen: float) -> None:
+        """Record the mean sequence length in this step."""
+        if self.disabled:
+            return
+        try:
+            self._pending_mean_seqlen = float(mean_seqlen)
+        except Exception:
+            self._pending_mean_seqlen = 0.0
+
+
     def end_run(self) -> None:
         """End the current profiling run and aggregate statistics."""
         if self.disabled:
@@ -240,6 +278,9 @@ class Profiler:
                 "throughput_tok_s": throughput,
                 "tokens_total": total_tokens,
                 "time_total_ms": total_time_ms,
+                "step_elapsed_times_ms": self._step_elapsed_times_ms,
+                "step_throughputs": self._step_throughputs,
+                "step_mean_seqlens": self._step_mean_seqlen,
             })
 
         # Compute bucket averages for this run (with "other" calculation for model buckets)
@@ -337,17 +378,25 @@ class Profiler:
             "runs": self._runs,
         }
 
-        # Write JSON
-        json_path = os.path.join(self.out_dir, "summary.json")
-        with open(json_path, "w") as f:
-            json.dump(global_summary, f, indent=2)
+        # Write .npz for step-level elapsed times and throughputs
+        step_elapsed_times_ms = np.array(self._runs[-1]["stats"]["step_elapsed_times_ms"])
+        step_throughputs = np.array(self._runs[-1]["stats"]["step_throughputs"])
+        step_mean_seqlens = np.array(self._runs[-1]["stats"]["step_mean_seqlens"])
+
+        npz_path = os.path.join(self.out_dir, "step_stats.npz")
+        np.savez(
+            npz_path,
+            step_elapsed_times_ms=step_elapsed_times_ms,
+            step_mean_seqlens=step_mean_seqlens,
+            step_throughputs=step_throughputs,
+        )
 
         # Write Markdown report
         md_path = os.path.join(self.out_dir, "report.md")
         self._write_markdown_report(md_path, global_summary)
 
         if self.rank == 0:
-            print(f"[Profiler] Saved:\n  {json_path}\n  {md_path}")
+            print(f"[Profiler] Saved:\n  {md_path}\n  {npz_path}\n")
             print(f"[Profiler] Global: steps={global_stats['steps_total']} "
                   f"mean={fmt(global_stats['mean_ms'])}ms tok/s={fmt(global_stats['throughput_tok_s'])}")
 

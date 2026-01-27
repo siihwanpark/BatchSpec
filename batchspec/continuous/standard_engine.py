@@ -104,6 +104,11 @@ class StandardContinuousEngine(StandardEngine, BatchBuilderMixin):
                 
                 # Trace the plan
                 self.tracer.on_plan(steps, workloads, self.kv_page_table)
+
+                # Record the mean sequence length in this step
+                cachelens = self.kv_page_table.cachelens
+                mean_seqlen = cachelens[cachelens > 16].float().mean().item() if (cachelens > 16).any() else 0.0
+                profiler.set_step_mean_seqlen(mean_seqlen)
             
                 # Build the batch and forward the model
                 with cpu_bucket_timer("engine.build_batch"):
@@ -112,6 +117,19 @@ class StandardContinuousEngine(StandardEngine, BatchBuilderMixin):
                     logits = self.forward(batch) # [nnz, vocab_size]
                 with cpu_bucket_timer("engine.sample"):
                     next_tokens = sample(logits[batch.qo_indptr[1:]-1, :], top_p=self.top_p, top_k=self.top_k, temperature=self.temperature) # [n_seqs, 1]
+                
+                if self.force_budget:
+                    next_tokens = self.budget_forcing(next_tokens)
+
+                # Record the number of tokens generated in this step
+                step_tokens = int(batch.status_map["DECODE"].shape[0]) if batch.status_map["DECODE"] is not None else 0
+                profiler.set_step_tokens(step_tokens)
+
+                # Remove the KV cache entries for the NULL sequences
+                if batch.status_map["NULL"] is not None:
+                    delete_lens = torch.zeros(self.batch_size, device=self.device, dtype=torch.int32)
+                    delete_lens.scatter_(0, batch.status_map["NULL"], 1)
+                    self.kv_page_table.delete_kv(delete_lens)
 
                 # Process the results
                 with cpu_bucket_timer("engine.process_results"):
@@ -119,7 +137,28 @@ class StandardContinuousEngine(StandardEngine, BatchBuilderMixin):
                 if steps % 100 == 0:
                     self.tracer.on_update(steps, workloads, self.kv_page_table, next_tokens) # update the tracer
                 steps += 1
-                profiler.set_step_tokens(int(next_tokens.shape[0]))
         
         profiler.end_run()
         return steps
+
+
+    def budget_forcing(self, next_tokens: Tensor) -> Tensor:
+        """Limits the number of accepted draft tokens when certain tokens appear.
+
+        The accepted draft tokens are truncated at the first occurrence of a suppressed token
+        in the draft. The bonus tokens are also forced to avoid suppressed tokens by
+        replacing them with a safe alternative when necessary.
+
+        Args:
+            next_tokens: [bsz, 1] next token ids
+
+        Returns:
+            updated_next_tokens: [bsz, 1] updated next token ids
+        """
+        suppress_mask = (next_tokens[..., None] == self.suppress_token_ids).any(dim=-1)[..., 0] # [bsz]
+        if suppress_mask.any():
+            num_to_replace = suppress_mask.sum()
+            random_indices = torch.randint(0, self.replace_token_ids.shape[0], (num_to_replace,), device=next_tokens.device)
+            next_tokens[suppress_mask, 0] = self.replace_token_ids[random_indices].to(next_tokens.dtype)
+        
+        return next_tokens
