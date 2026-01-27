@@ -105,6 +105,39 @@ class ContinuousArguments:
 
 
 @dataclass
+class ContinuousBenchmarkArguments:
+    """Arguments specific to continuous benchmark runner."""
+    exp_type: Literal["prefill_decode", "hetero_decode"] = field(
+        default="prefill_decode",
+        metadata={"help": "Experiment type (prefill_decode, hetero_decode)."}
+    )
+    prefill_ratio: float = field(
+        default=0.5,
+        metadata={"help": "Ratio of sequences to prefill."}
+    )
+    prefill_target_len: int = field(
+        default=1024,
+        metadata={"help": "Target length of the prefill sequences."}
+    )
+    decode_start_len: int = field(
+        default=1024,
+        metadata={"help": "Start length of the decode sequences."}
+    )
+    short_ratio: float = field(
+        default=0.5,
+        metadata={"help": "Ratio of short sequences."}
+    )
+    short_target_len: int = field(
+        default=1024,
+        metadata={"help": "Target length of the short sequences."}
+    )
+    long_target_len: int = field(
+        default=1024,
+        metadata={"help": "Target length of the long sequences."}
+    )
+
+
+@dataclass
 class SamplingArguments:
     """Sampling configuration for generation."""
     
@@ -356,6 +389,30 @@ def parse_continuous_args() -> SimpleNamespace:
     (common, continuous, sampling, specdec, standalone, ngram, eagle, magicdec, mtp, profiler, distributed) = parsed
     
     merged = _merge_to_namespace(common, continuous, sampling, specdec, standalone, ngram, eagle, magicdec, mtp, profiler, distributed)
+    merged = _postprocess_args(merged)
+    
+    return merged
+
+def parse_continuous_benchmark_args() -> SimpleNamespace:
+    """Parse arguments for run_cont_bench.py"""
+    parser = HfArgumentParser((
+        CommonArguments,
+        ContinuousBenchmarkArguments,
+        SamplingArguments,
+        SpecDecArguments,
+        StandaloneArguments,
+        NGramArguments,
+        EAGLEArguments,
+        MagicDecArguments,
+        MTPArguments,
+        ProfilerArguments,
+        DistributedArguments,
+    ))
+
+    parsed = parser.parse_args_into_dataclasses()
+    (common, continuous_benchmark, sampling, specdec, standalone, ngram, eagle, magicdec, mtp, profiler, distributed) = parsed
+    
+    merged = _merge_to_namespace(common, continuous_benchmark, sampling, specdec, standalone, ngram, eagle, magicdec, mtp, profiler, distributed)
     merged = _postprocess_args(merged)
     
     return merged

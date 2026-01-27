@@ -79,12 +79,14 @@ class Profiler:
         # Pending data which will be recorded at the end of the step
         self._pending_tokens: int = 0
         self._pending_mean_seqlen: float = 0.0
+        self._pending_seqlen_std: float = 0.0
 
         # Step-level elapsed time and throughput
         self._elapsed_time_ms: float = 0.0
         self._step_elapsed_times_ms: List[float] = []
         self._step_throughputs: List[float] = []
-        self._step_mean_seqlen: List[float] = []
+        self._step_mean_seqlens: List[float] = []
+        self._step_seqlen_stds: List[float] = []
 
         # === Accumulated results ===
         self._runs: List[Dict[str, Any]] = []
@@ -140,7 +142,8 @@ class Profiler:
         self._step_engine_buckets.clear()
         self._step_elapsed_times_ms.clear()
         self._step_throughputs.clear()
-        self._step_mean_seqlen.clear()
+        self._step_mean_seqlens.clear()
+        self._step_seqlen_stds.clear()
         self._elapsed_time_ms = 0.0
         self._step_idx = 0
         
@@ -199,8 +202,13 @@ class Profiler:
 
                 # Record mean sequence length
                 mean_seqlen = profiler._pending_mean_seqlen
-                profiler._step_mean_seqlen.append(float(mean_seqlen))
+                profiler._step_mean_seqlens.append(float(mean_seqlen))
                 profiler._pending_mean_seqlen = 0.0
+
+                # Record standard deviation of sequence length
+                seqlen_std = profiler._pending_seqlen_std
+                profiler._step_seqlen_stds.append(float(seqlen_std))
+                profiler._pending_seqlen_std = 0.0
 
                 # Record throughput
                 throughput = tokens / (step_ms / 1000.0) if step_ms > 0 else 0.0
@@ -250,6 +258,16 @@ class Profiler:
             self._pending_mean_seqlen = 0.0
 
 
+    def set_step_seqlen_std(self, seqlen_std: float) -> None:
+        """Record the standard deviation of sequence length in this step."""
+        if self.disabled:
+            return
+        try:
+            self._pending_seqlen_std = float(seqlen_std)
+        except Exception:
+            self._pending_seqlen_std = 0.0
+    
+    
     def end_run(self) -> None:
         """End the current profiling run and aggregate statistics."""
         if self.disabled:
@@ -280,7 +298,8 @@ class Profiler:
                 "time_total_ms": total_time_ms,
                 "step_elapsed_times_ms": self._step_elapsed_times_ms,
                 "step_throughputs": self._step_throughputs,
-                "step_mean_seqlens": self._step_mean_seqlen,
+                "step_mean_seqlens": self._step_mean_seqlens,
+                "step_seqlen_stds": self._step_seqlen_stds,
             })
 
         # Compute bucket averages for this run (with "other" calculation for model buckets)
@@ -382,12 +401,14 @@ class Profiler:
         step_elapsed_times_ms = np.array(self._runs[-1]["stats"]["step_elapsed_times_ms"])
         step_throughputs = np.array(self._runs[-1]["stats"]["step_throughputs"])
         step_mean_seqlens = np.array(self._runs[-1]["stats"]["step_mean_seqlens"])
+        step_seqlen_stds = np.array(self._runs[-1]["stats"]["step_seqlen_stds"])
 
         npz_path = os.path.join(self.out_dir, "step_stats.npz")
         np.savez(
             npz_path,
             step_elapsed_times_ms=step_elapsed_times_ms,
             step_mean_seqlens=step_mean_seqlens,
+            step_seqlen_stds=step_seqlen_stds,
             step_throughputs=step_throughputs,
         )
 

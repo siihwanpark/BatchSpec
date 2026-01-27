@@ -261,6 +261,61 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
         return steps
 
 
+    # ========================= For benchmarking =========================
+    def prefill(self, sequences: List[Sequence]):
+        """
+        Generate tokens from prompts.
+
+        Args:
+            sequences: List[Sequence], the sequences to generate from.
+
+        Returns:
+            List[Sequence], the completed sequences.
+        """
+        # Clear KV cache and reset steps counter
+        self.kv_page_table.clear_kv(self.model)
+
+        # Initialize the prefill scheduler
+        prefill_scheduler = PrefillScheduler(max_concurrency=self.batch_size, prefill_chunk_len=self.prefill_chunk_len)
+        prefill_scheduler.add_sequences(sequences)
+
+        # Initialize the next tokens buffer
+        next_tokens = torch.full((self.batch_size,), -1, device=self.device, dtype=torch.long)
+
+        # Main loop
+        while not prefill_scheduler.is_done():
+            # Plan the workloads (only when realloc is required)
+            if prefill_scheduler.realloc:
+                workloads, _ = prefill_scheduler.plan()
+            
+            # Trace the plan
+            self.tracer.on_plan(steps, workloads, self.kv_page_table)
+
+            # Build the batch and forward the model
+            batch = self.build_batch(workloads, self.kv_page_table, draft_buffer)
+            logits, _ = self.forward(batch) # [nnz, vocab_size], [nnz, hidden_size]
+
+            # Get the qo_indptr for the logits
+            logits_qo_indptr = self.get_logits_qo_indptr(batch.qo_indptr, batch.gate_mask)
+
+            # PREFILL: Generate the next tokens
+            if (prefill_indices := batch.status_map["PREFILL"]) is not None:
+                last_token_indices = logits_qo_indptr[1:][prefill_indices] - 1 # [n_pre]
+                last_logits = logits[last_token_indices, :] # [n_pre, vocab_size]
+                next_tokens[prefill_indices] = sample(last_logits, top_p=self.top_p, top_k=self.top_k, temperature=self.temperature)[:, 0] # [n_pre]
+            
+            # Remove the KV cache entries for the NULL sequences
+            if batch.status_map["NULL"] is not None:
+                delete_lens = torch.zeros(self.batch_size, device=self.device, dtype=torch.int32)
+                delete_lens.scatter_(0, batch.status_map["NULL"], 1)
+                self.kv_page_table.delete_kv(delete_lens)
+
+            # Process the results
+            prefill_scheduler.process_results(workloads, next_tokens)
+        
+        return prefill_scheduler
+
+
     # =============================== Helper Functions ===============================
     @staticmethod
     def get_logits_qo_indptr(qo_indptr: Tensor, gate_mask: Tensor) -> Tensor:

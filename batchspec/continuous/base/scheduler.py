@@ -519,3 +519,164 @@ class MTPScheduler(Scheduler):
 
         # Reallocation trigger
         self.realloc = (bool(self.free_slots) and bool(self.waiting_queue)) or status_change or prefill_len_changed
+
+
+
+# ---------------------------------------------------------------------
+# PrefillScheduler: Scheduler for prefilling only (only for Benchmarking).
+# ---------------------------------------------------------------------
+class PrefillScheduler:
+
+    def __init__(self, max_concurrency: int, prefill_chunk_len: int):
+        self.max_concurrency: int = max_concurrency
+        self.prefill_chunk_len: int = prefill_chunk_len
+
+        self.slots: List[Optional[Sequence]] = [None] * max_concurrency
+        self.free_slots: List[int] = list(range(max_concurrency - 1, -1, -1))
+        self.waiting_queue: Deque[Sequence] = deque()
+
+        self.total: int = 0
+        self.realloc: bool = True
+        self.completed: List[Sequence] = []
+
+
+    def is_done(self) -> bool:
+        """Return True if all sequences are finished."""
+        return len(self.completed) == self.total
+
+
+    def add_sequences(self, sequences: List[Sequence]) -> None:
+        """
+        Add new sequences to the waiting queue.
+
+        Args:
+            sequences: A list of sequences to be added to the waiting queue.
+        """
+        if self.total + len(sequences) > self.max_concurrency:
+            raise ValueError(f"Total number of sequences ({self.total + len(sequences)}) exceeds the maximum concurrency ({self.max_concurrency}).")
+        
+        self.total += len(sequences)
+        self.waiting_queue.extend(sequences)
+
+
+    def _assign_waiting_to_free_slots(self) -> None:
+        """
+        Assign waiting sequences to any available free slots.
+
+        For each available slot:
+          1. Pop a new sequence from waiting_queue.
+          2. Attach it to that slot.
+          3. Set its status to PREFILL (it must first process the prompt).
+        """
+        while self.free_slots and self.waiting_queue:
+            slot_idx = self.free_slots.pop()
+            seq = self.waiting_queue.popleft()
+
+            seq.status = Status.PREFILL
+            self.slots[slot_idx] = seq
+
+
+    def plan(self) -> List[Workload]:
+        """
+        Create the workload plan for the next forward step.
+
+        The plan determines which slots will be active and how many tokens each
+        will process. It always prioritizes decode-ready slots first, since
+        decoding is latency-critical.
+
+        Returns:
+            List[Workload]: ordered by slot index, describing the batch layout.
+        """
+        workloads: List[Workload] = []
+
+        # (1) Assign new waiting sequences to free slots if possible.
+        if self.free_slots and self.waiting_queue:
+            self._assign_waiting_to_free_slots()
+
+        # (2) Separate the slots into prefill-ready.
+        prefill_ready_slots: Deque[int] = deque()
+        for slot_idx, seq in enumerate(self.slots):
+            # Empty slot
+            if seq is None:
+                continue
+
+            if seq.status == Status.PREFILL:
+                prefill_ready_slots.append(slot_idx)
+
+        # (3) Fill remaining capacity with prefill-ready slots.
+        while prefill_ready_slots and len(workloads) < self.max_concurrency:
+            slot_idx = prefill_ready_slots.popleft()
+            seq = self.slots[slot_idx]
+
+            assert seq is not None, f"Slot {slot_idx} is unassigned."
+            assert seq.status == Status.PREFILL, f"Sequence {seq.seq_id} not in prefill state."
+            assert seq.prompt_len - seq.num_prefilled_tokens > 0, \
+                f"Sequence {seq.seq_id} has no tokens left to prefill."
+
+            workloads.append(Workload(slot_idx=slot_idx, seq=seq,
+                                      n_tokens=min(self.prefill_chunk_len, seq.prompt_len - seq.num_prefilled_tokens)))
+
+        # (4) Fill remaining capacity with dummy workloads.
+        if len(workloads) < self.max_concurrency:
+            assert len(self.free_slots) == self.max_concurrency - len(workloads), f"num free slots mismatch with remaining capacity: {self.max_concurrency} - {len(workloads)} != {len(self.free_slots)}."
+            workloads.extend([Workload(slot_idx=slot_idx, seq=None, n_tokens=1) for slot_idx in self.free_slots])
+
+        # (5) Sort by slot index so the model input order matches slot order
+        # At this point, workloads are simply assignments of how many tokens to process for each slot.
+        workloads.sort(key=lambda x: x.slot_idx)
+        return workloads
+
+
+    def process_results(
+        self,
+        workloads: List[Workload],
+        next_tokens: Tensor,
+    ) -> None:
+        """
+        Integrate model outputs (next_tokens) back into scheduler state.
+
+        For each workload:
+            - Update the sequence progress counters (prefilled tokens).
+            - Check if its phase transitions (PREFILL→COMPLETE).
+
+        Args:
+            workloads: A list of workloads that have been processed.
+            next_tokens: The next tokens generated by the workloads.
+        """
+        status_change_occurred = False
+        prefill_len_changed = False
+
+        for workload in workloads:
+            slot_idx = workload.slot_idx
+            seq = workload.seq
+            n_tokens = workload.n_tokens
+            next_token = next_tokens[slot_idx]
+
+            if seq is None:
+                # This is a dummy workload, i.e. a slot that is not assigned to any sequence
+                # Nothing to do
+                continue
+
+            assert seq.seq_id == self.slots[slot_idx].seq_id, f"Sequence {seq.seq_id} is not in slot {slot_idx}."
+
+            # PREFILL → PREFILL or COMPLETE transition
+            if seq.status == Status.PREFILL:
+                seq.num_prefilled_tokens += n_tokens
+                seq.cur_pos += n_tokens
+
+                if seq.num_prefilled_tokens == seq.prompt_len:
+                    # Prefill completed → move to decoding phase
+                    seq.status = Status.DECODE
+                    seq.content[seq.cur_pos] = next_token
+                    seq.num_generated_tokens += 1
+                    self.completed.append(seq)
+                    
+                    status_change_occurred = True
+                else:
+                    # Still more tokens to prefill → check if the workload should be reallocated
+                    if seq.prompt_len - seq.num_prefilled_tokens < self.prefill_chunk_len:
+                        # Prefill length is less than the chunk length → indicates the workload should be reallocated (with different n_tokens)
+                        prefill_len_changed = True
+
+        # If any status changed or new slots became available or prefill length changed, trigger reallocation next step
+        self.realloc = status_change_occurred or prefill_len_changed

@@ -38,7 +38,7 @@ class SchedulerTracer:
       - next_tokens are indexed by slot_idx (as in your process_results()).
     """
 
-    def __init__(self, scheduler, *, color: bool = True, show_queues: bool = True, print_every: int = 25):
+    def __init__(self, scheduler, *, color: bool = True, show_queues: bool = True, print_every: int = 10):
         self.sch = scheduler
         self.color = color
         self.show_queues = show_queues
