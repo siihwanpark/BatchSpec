@@ -127,6 +127,7 @@ class StandardContinuousEngine(StandardEngine, BatchBuilderMixin):
                 # Record the number of tokens generated in this step
                 step_tokens = int(batch.status_map["DECODE"].shape[0]) if batch.status_map["DECODE"] is not None else 0
                 profiler.set_step_tokens(step_tokens)
+                profiler.set_step_num_active_seqs(step_tokens)
 
                 # Remove the KV cache entries for the NULL sequences
                 if batch.status_map["NULL"] is not None:

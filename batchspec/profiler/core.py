@@ -80,6 +80,7 @@ class Profiler:
         self._pending_tokens: int = 0
         self._pending_mean_seqlen: float = 0.0
         self._pending_seqlen_std: float = 0.0
+        self._pending_num_active_seqs: int = 0
 
         # Step-level elapsed time and throughput
         self._elapsed_time_ms: float = 0.0
@@ -87,6 +88,8 @@ class Profiler:
         self._step_throughputs: List[float] = []
         self._step_mean_seqlens: List[float] = []
         self._step_seqlen_stds: List[float] = []
+        self._step_time_per_token_ms: List[float] = []
+        self._step_num_active_seqs: List[int] = []
 
         # === Accumulated results ===
         self._runs: List[Dict[str, Any]] = []
@@ -144,6 +147,7 @@ class Profiler:
         self._step_throughputs.clear()
         self._step_mean_seqlens.clear()
         self._step_seqlen_stds.clear()
+        self._step_time_per_token_ms.clear()
         self._elapsed_time_ms = 0.0
         self._step_idx = 0
         
@@ -210,6 +214,15 @@ class Profiler:
                 profiler._step_seqlen_stds.append(float(seqlen_std))
                 profiler._pending_seqlen_std = 0.0
 
+                # Record number of active sequences
+                num_active_seqs = profiler._pending_num_active_seqs
+                profiler._step_num_active_seqs.append(int(num_active_seqs))
+                profiler._pending_num_active_seqs = 0
+
+                # Record time per token
+                time_per_token = step_ms / (tokens / num_active_seqs) if tokens > 0 and num_active_seqs > 0 else 0.0
+                profiler._step_time_per_token_ms.append(float(time_per_token))
+
                 # Record throughput
                 throughput = tokens / (step_ms / 1000.0) if step_ms > 0 else 0.0
                 profiler._step_throughputs.append(throughput)
@@ -266,6 +279,16 @@ class Profiler:
             self._pending_seqlen_std = float(seqlen_std)
         except Exception:
             self._pending_seqlen_std = 0.0
+
+
+    def set_step_num_active_seqs(self, num_active_seqs: int) -> None:
+        """Record the number of active sequences in this step."""
+        if self.disabled:
+            return
+        try:
+            self._pending_num_active_seqs = int(num_active_seqs)
+        except Exception:
+            self._pending_num_active_seqs = 0
     
     
     def end_run(self) -> None:
@@ -300,6 +323,7 @@ class Profiler:
                 "step_throughputs": self._step_throughputs,
                 "step_mean_seqlens": self._step_mean_seqlens,
                 "step_seqlen_stds": self._step_seqlen_stds,
+                "step_time_per_token_ms": self._step_time_per_token_ms,
             })
 
         # Compute bucket averages for this run (with "other" calculation for model buckets)
@@ -402,6 +426,7 @@ class Profiler:
         step_throughputs = np.array(self._runs[-1]["stats"]["step_throughputs"])
         step_mean_seqlens = np.array(self._runs[-1]["stats"]["step_mean_seqlens"])
         step_seqlen_stds = np.array(self._runs[-1]["stats"]["step_seqlen_stds"])
+        step_time_per_token_ms = np.array(self._runs[-1]["stats"]["step_time_per_token_ms"])
 
         npz_path = os.path.join(self.out_dir, "step_stats.npz")
         np.savez(
@@ -410,6 +435,7 @@ class Profiler:
             step_mean_seqlens=step_mean_seqlens,
             step_seqlen_stds=step_seqlen_stds,
             step_throughputs=step_throughputs,
+            step_time_per_token_ms=step_time_per_token_ms,
         )
 
         # Write Markdown report

@@ -244,6 +244,7 @@ class MTPContinuousEngine(MTPEngine, MTPBatchBuilderMixin):
 
                 # Record the number of tokens generated in this step
                 profiler.set_step_tokens(int(accept_nums_buffer.sum().item()))
+                profiler.set_step_num_active_seqs(int((accept_nums_buffer != 0).sum().item()))
 
                 # Remove the KV cache entries for the NULL sequences
                 if batch.status_map["NULL"] is not None:
