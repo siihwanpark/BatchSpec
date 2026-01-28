@@ -25,7 +25,7 @@ REPO_IDS=(
     # "Qwen/Qwen3-1.7B"
     # "Qwen/Qwen3-8B"
     # "Qwen/Qwen3-0.6B"
-    "Qwen/Qwen3-8B"
+    # "Qwen/Qwen3-8B"
     # "Qwen/Qwen3-14B"
     # "Qwen/Qwen3-32B"
     # "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
